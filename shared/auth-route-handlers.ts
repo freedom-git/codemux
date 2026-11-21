@@ -48,6 +48,30 @@ interface LocalAuthOptions {
 }
 
 // -----------------------------------------------------------------------------
+// Safe post-tunnel-auth return path helper
+// -----------------------------------------------------------------------------
+
+const DISALLOWED_RETURN_PREFIXES = ["/api", "/opencode-api", "/webhook", "/ws"];
+
+export function resolveSafeTunnelReturnPath(raw: string | null | undefined): string {
+  if (typeof raw !== "string") return "/";
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//") || /[\u0000-\u001f\u007f\\]/.test(trimmed)) {
+    return "/";
+  }
+  try {
+    const parsed = new URL(trimmed, "http://codemux.local");
+    if (parsed.origin !== "http://codemux.local") return "/";
+    if (DISALLOWED_RETURN_PREFIXES.some(prefix => parsed.pathname === prefix || parsed.pathname.startsWith(`${prefix}/`))) {
+      return "/";
+    }
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return "/";
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Main auth route dispatcher
 // Returns true if the route was handled, false otherwise.
 // -----------------------------------------------------------------------------
@@ -61,6 +85,15 @@ export async function handleAuthRoutes(
   localAuthOptions: LocalAuthOptions,
 ): Promise<boolean> {
   // --- Auth routes ---
+  if (pathname === "/api/auth/tunnel-return" && req.method === "GET") {
+    const location = resolveSafeTunnelReturnPath(url.searchParams.get("returnTo"));
+    res.writeHead(302, {
+      Location: location,
+      "Cache-Control": "no-store",
+    });
+    res.end();
+    return true;
+  }
   if (pathname === "/api/auth/validate" && req.method === "GET") {
     return handleValidateToken(req, res, store);
   }

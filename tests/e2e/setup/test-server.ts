@@ -14,6 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { randomUUID } from "crypto";
 import { sendJson, extractBearerToken } from "../../../shared/http-utils";
+import { resolveSafeTunnelReturnPath } from "../../../shared/auth-route-handlers";
 import { MockEngineAdapter } from "../../../electron/main/engines/mock-adapter";
 import { MockAuthStore } from "./mock-auth-store";
 import { normalizeMessageToolDisplay, normalizeToolPartDisplay } from "../../../electron/main/engines/tool-display";
@@ -654,6 +655,15 @@ export async function startTestServer(
     }
 
     // --- Auth endpoints ---
+
+    if (pathname === "/api/auth/tunnel-return" && req.method === "GET") {
+      res.writeHead(302, {
+        Location: resolveSafeTunnelReturnPath(url.searchParams.get("returnTo")),
+        "Cache-Control": "no-store",
+      });
+      res.end();
+      return;
+    }
 
     if (pathname === "/api/auth/local-auth" && req.method === "POST") {
       sendJson(res, {

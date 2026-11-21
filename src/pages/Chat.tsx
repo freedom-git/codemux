@@ -16,6 +16,7 @@ import { useNavigate } from "@solidjs/router";
 import { gateway, gatewayConnected, getAuthoritativeSessionActivity, hasAuthoritativeSessionState } from "../lib/gateway-api";
 import { gatewayClient } from "../lib/gateway-client";
 import { observeBrowserResume } from "../lib/browser-resume";
+import { isDevTunnelLocation, probeTunnelAuth, triggerTunnelReauth, tunnelAuthRedirecting, tunnelAuthStatus } from "../lib/tunnel-auth";
 import { compareParts, upsertPart } from "../lib/message-parts";
 import { ensureGatewayInitialized, refreshEngineConfigState } from "../lib/engine-bootstrap";
 import { logger } from "../lib/logger";
@@ -1130,13 +1131,14 @@ export default function Chat() {
     try {
       if (!isElectron()) {
         const localAccess = await Auth.isLocalAccess();
+        if (disposed || gen !== initGeneration || tunnelAuthRedirecting()) return;
         const serverMode = getSetting<boolean>("serverMode") === true;
         setIsLocalAccess(localAccess);
         setCanAddProject(localAccess || serverMode);
       }
 
       const isValidToken = await Auth.checkDeviceToken();
-      if (disposed || gen !== initGeneration) return;
+      if (disposed || gen !== initGeneration || tunnelAuthRedirecting()) return;
       if (!isValidToken) {
         logger.debug("[Init] Device token invalid or revoked, redirecting to entry");
         if (!isElectron()) gateway.destroy();
@@ -1182,10 +1184,20 @@ export default function Chat() {
         },
         onDisconnected: (reason: string) => {
           if (disposed) return;
+          const wasConnected = wsConnected();
           recoveryGeneration++;
           logger.warn("[Gateway] Disconnected:", reason);
           setWsConnected(false);
-          notify(t().notification.gatewayDisconnected, "warning", 8000);
+          if (!wasConnected) return;
+          if (isElectron() || !isDevTunnelLocation()) {
+            notify(t().notification.gatewayDisconnected, "warning", 8000);
+            return;
+          }
+          void probeTunnelAuth().then((status) => {
+            if (!disposed && !untrack(wsConnected) && status === "ok" && !untrack(tunnelAuthRedirecting)) {
+              notify(untrack(t).notification.gatewayDisconnected, "warning", 8000);
+            }
+          });
         },
         onPartUpdated: handlePartUpdated,
         onPartsBatch: handlePartsBatch,
@@ -2841,7 +2853,7 @@ export default function Chat() {
       setWebRecovering(true);
       try {
         const valid = await Auth.checkDeviceToken();
-        if (disposed) return;
+        if (disposed || tunnelAuthRedirecting()) return;
         if (!valid) {
           gateway.destroy();
           Auth.clearAuth();
@@ -3018,13 +3030,60 @@ export default function Chat() {
           </Show>
 
           <Show when={!wsConnected()}>
-            <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-red-500/10 ring-1 ring-inset ring-red-500/25">
-              <span class="cm-live-dot text-red-500" />
-              <span class="cm-mono text-[10px] font-medium text-red-600 dark:text-red-400">{t().chat.disconnected}</span>
-            </div>
+            <Show
+              when={tunnelAuthStatus() !== "ok"}
+              fallback={
+                <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-red-500/10 ring-1 ring-inset ring-red-500/25">
+                  <span class="cm-live-dot text-red-500" />
+                  <span class="cm-mono text-[10px] font-medium text-red-600 dark:text-red-400">{t().chat.disconnected}</span>
+                </div>
+              }
+            >
+              <button
+                type="button"
+                data-testid="chat-tunnel-reauth-pill"
+                onClick={() => triggerTunnelReauth({ force: true })}
+                class={`flex items-center gap-1.5 px-2 py-0.5 rounded-md ring-1 ring-inset transition-colors cursor-pointer ${
+                  tunnelAuthStatus() === "access_denied"
+                    ? "bg-red-500/10 hover:bg-red-500/15 ring-red-500/25 text-red-600 dark:text-red-400"
+                    : "bg-amber-500/10 hover:bg-amber-500/15 ring-amber-500/25 text-amber-700 dark:text-amber-300"
+                }`}
+              >
+                <span class={`cm-live-dot ${tunnelAuthStatus() === "access_denied" ? "text-red-500" : "text-amber-500"}`} />
+                <span class="cm-mono text-[10px] font-medium">
+                  {tunnelAuthStatus() === "access_denied" ? t().chat.tunnelAccessDeniedShort : t().chat.tunnelReauthShort}
+                </span>
+              </button>
+            </Show>
           </Show>
         </div>
       </div>
+
+      <Show when={!wsConnected() && tunnelAuthStatus() !== "ok"}>
+        <div
+          role="alert"
+          data-testid="chat-tunnel-auth-banner"
+          class={`w-full flex-shrink-0 px-3 py-2 border-b flex items-center justify-between gap-3 text-xs ${
+            tunnelAuthStatus() === "access_denied"
+              ? "bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-300"
+              : "bg-amber-500/10 border-amber-500/20 text-amber-800 dark:text-amber-200"
+          }`}
+        >
+          <span class="min-w-0 leading-snug text-pretty">
+            {tunnelAuthStatus() === "access_denied"
+              ? t().chat.tunnelAccessDeniedPrompt
+              : t().chat.tunnelReauthPrompt}
+          </span>
+          <button
+            type="button"
+            data-testid="chat-tunnel-reauth-button"
+            onClick={() => triggerTunnelReauth({ force: true })}
+            class="shrink-0 px-2.5 py-1 rounded-md font-medium bg-[var(--cm-surface)] text-gray-900 dark:text-gray-100 ring-1 ring-inset ring-[var(--cm-hairline-strong)] hover:bg-[var(--cm-surface-2)] transition-colors cursor-pointer"
+          >
+            {t().chat.tunnelReauthAction}
+          </button>
+        </div>
+      </Show>
 
       <div class="flex flex-1 min-h-0 overflow-hidden">
 

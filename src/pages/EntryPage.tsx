@@ -20,6 +20,7 @@ import { BrandMark } from "../components/BrandMark";
 import { ChannelCard, channelButtonClass, type ChannelRunState } from "../components/ChannelCard";
 import { publicAssetUrl } from "../lib/public-assets";
 import { CONNECTION_CENTER_PATH } from "../lib/routes";
+import { triggerTunnelReauth, tunnelAuthRedirecting, tunnelAuthStatus } from "../lib/tunnel-auth";
 
 /** Loading wins over the last reported status while a toggle is in flight. */
 function channelState(info: ChannelInfo | null, loading: boolean): ChannelRunState {
@@ -176,9 +177,11 @@ export default function EntryPage() {
 
     // For Web clients, check if already authenticated
     const hasValidToken = await Auth.checkDeviceToken();
+    if (tunnelAuthRedirecting()) return;
     
     // Check if accessing from localhost
     const isLocal = await Auth.isLocalAccess();
+    if (tunnelAuthRedirecting()) return;
     logger.debug("[EntryPage] Is localhost:", isLocal);
 
     if (isLocal) {
@@ -1000,6 +1003,32 @@ export default function EntryPage() {
               <h1 class="text-[22px] font-semibold tracking-tight text-center mb-6 text-gray-900 dark:text-white">
                 {t().login.title}
               </h1>
+
+              <Show when={tunnelAuthStatus() !== "ok"}>
+                <div
+                  role="alert"
+                  data-testid="entry-tunnel-auth-banner"
+                  class={`mb-4 rounded-xl p-3 text-xs flex items-center justify-between gap-3 ring-1 ring-inset ${
+                    tunnelAuthStatus() === "access_denied"
+                      ? "bg-red-500/10 text-red-700 dark:text-red-300 ring-red-500/25"
+                      : "bg-amber-500/10 text-amber-800 dark:text-amber-300 ring-amber-500/25"
+                  }`}
+                >
+                  <span class="min-w-0 leading-snug text-pretty">
+                    {tunnelAuthStatus() === "access_denied"
+                      ? t().chat.tunnelAccessDeniedPrompt
+                      : t().chat.tunnelReauthPrompt}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="entry-tunnel-reauth-button"
+                    onClick={() => triggerTunnelReauth({ force: true })}
+                    class="shrink-0 px-2.5 py-1.5 rounded-lg font-medium bg-[var(--cm-surface)] text-gray-900 dark:text-gray-100 ring-1 ring-inset ring-[var(--cm-hairline-strong)] hover:bg-[var(--cm-surface-2)] transition-colors"
+                  >
+                    {t().chat.tunnelReauthAction}
+                  </button>
+                </div>
+              </Show>
 
               <form onSubmit={handleLoginSubmit} class="space-y-4">
                 <div>

@@ -10,25 +10,41 @@ vi.mock("../../../../src/lib/electron-api", () => ({ authAPI: { validateToken: m
 vi.mock("../../../../src/lib/logger", () => ({ logger: { error: vi.fn() } }));
 
 import { Auth } from "../../../../src/lib/auth";
+import {
+  resetTunnelAuthStateForTests,
+  setTunnelAuthNavigatorForTests,
+  tunnelAuthRedirecting,
+  tunnelAuthStatus,
+} from "../../../../src/lib/tunnel-auth";
 
 describe("Auth.checkDeviceToken", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetTunnelAuthStateForTests();
     mocks.isElectron.mockReturnValue(false);
     const storage = new Map<string, string>();
+    const session = new Map<string, string>();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
+    });
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => session.get(key) ?? null,
+      setItem: (key: string, value: string) => session.set(key, value),
+      removeItem: (key: string) => session.delete(key),
     });
     vi.stubGlobal("fetch", fetchMock);
     Auth.saveToken("device-token");
     Auth.saveDeviceId("approved-device");
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    resetTunnelAuthStateForTests();
+    vi.unstubAllGlobals();
+  });
 
   function validationResponse(status: number, body: unknown = {}): Response {
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -163,6 +179,108 @@ describe("Auth.checkDeviceToken", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("redirects through tunnel-return while preserving device approval when Dev Tunnels requires sign-in", async () => {
+    const navigations: string[] = [];
+    setTunnelAuthNavigatorForTests((url) => navigations.push(url));
+    vi.stubGlobal("window", {
+      location: {
+        origin: "https://codemux-test-8233.jpe1.devtunnels.ms",
+        pathname: "/chat",
+        search: "",
+        hash: "",
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce({
+      type: "opaqueredirect",
+      status: 0,
+      ok: false,
+      headers: new Headers(),
+    } as Response);
+
+    expect(await Auth.checkDeviceToken()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/validate", {
+      headers: { Authorization: "Bearer device-token" },
+      cache: "no-store",
+      redirect: "manual",
+      signal: expect.any(AbortSignal),
+    });
+    expect(Auth.getToken()).toBe("device-token");
+    expect(Auth.getDeviceId()).toBe("approved-device");
+    expect(tunnelAuthStatus()).toBe("reauth_required");
+    expect(tunnelAuthRedirecting()).toBe(true);
+    expect(navigations).toEqual(["/api/auth/tunnel-return?returnTo=%2Fchat"]);
+
+    // Immediate repeated redirect within cooldown does not loop top-level navigation.
+    fetchMock.mockResolvedValueOnce({
+      type: "opaqueredirect",
+      status: 0,
+      ok: false,
+      headers: new Headers(),
+    } as Response);
+    expect(await Auth.checkDeviceToken()).toBe(true);
+    expect(navigations).toHaveLength(1);
+    expect(tunnelAuthStatus()).toBe("reauth_required");
+
+    // Once sign-in succeeds, tunnel auth state resets cleanly.
+    fetchMock.mockResolvedValueOnce(validationResponse(200, { valid: true, deviceId: "approved-device" }));
+    expect(await Auth.checkDeviceToken()).toBe(true);
+    expect(tunnelAuthStatus()).toBe("ok");
+    expect(tunnelAuthRedirecting()).toBe(false);
+  });
+
+  it("distinguishes non-JSON tunnel 403 access denial from CodeMux JSON 403 policy responses on Dev Tunnels", async () => {
+    const navigations: string[] = [];
+    setTunnelAuthNavigatorForTests((url) => navigations.push(url));
+    vi.stubGlobal("window", {
+      location: {
+        origin: "https://codemux-test-8233.jpe1.devtunnels.ms",
+        pathname: "/chat",
+        search: "",
+        hash: "",
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response("<html>403 Forbidden</html>", {
+      status: 403,
+      headers: { "Content-Type": "text/html" },
+    }));
+    expect(await Auth.checkDeviceToken()).toBe(true);
+    expect(Auth.getToken()).toBe("device-token");
+    expect(tunnelAuthStatus()).toBe("access_denied");
+    expect(navigations).toEqual([]);
+
+    fetchMock.mockResolvedValueOnce(validationResponse(403, { error: "Remote access is disabled for this entry point." }));
+    expect(await Auth.checkDeviceToken()).toBe(true);
+    expect(tunnelAuthStatus()).toBe("ok");
+  });
+
+  it.each([
+    "https://demo.trycloudflare.com",
+    "https://codemux.example.com",
+    "http://localhost:8233",
+    "http://192.168.1.20:8233",
+  ])("leaves non-Dev-Tunnel origin %s completely untouched", async (origin) => {
+    const navigations: string[] = [];
+    setTunnelAuthNavigatorForTests((url) => navigations.push(url));
+    vi.stubGlobal("window", {
+      location: { origin, pathname: "/chat", search: "", hash: "" },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response("<html>403 Forbidden</html>", {
+      status: 403,
+      headers: { "Content-Type": "text/html" },
+    }));
+    expect(await Auth.checkDeviceToken()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/validate", {
+      headers: { Authorization: "Bearer device-token" },
+      cache: "no-store",
+      signal: expect.any(AbortSignal),
+    });
+    expect(tunnelAuthStatus()).toBe("ok");
+    expect(navigations).toEqual([]);
   });
 });
 

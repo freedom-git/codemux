@@ -274,6 +274,11 @@ export interface LocaleDict {
     noModelError: string;
     queued: string;
     disconnected: string;
+    tunnelReauthShort: string;
+    tunnelReauthPrompt: string;
+    tunnelAccessDeniedShort: string;
+    tunnelAccessDeniedPrompt: string;
+    tunnelReauthAction: string;
     dashboardTab: string;
     chatTab: string;
     teamTask: string;
@@ -1376,6 +1381,11 @@ export const en: LocaleDict = {
     noModelError: "No model configured. Please set a model in Settings > Engines.",
     queued: "Queued",
     disconnected: "Disconnected",
+    tunnelReauthShort: "Sign in required",
+    tunnelReauthPrompt: "Tunnel sign-in expired. Re-authenticate to restore live connection.",
+    tunnelAccessDeniedShort: "Access denied",
+    tunnelAccessDeniedPrompt: "Current account cannot access this private tunnel. Sign in with an authorized account.",
+    tunnelReauthAction: "Re-authenticate",
     dashboardTab: "Dashboard",
     chatTab: "Chat",
     teamTask: "Team Task",

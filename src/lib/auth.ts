@@ -2,6 +2,7 @@ import { logger } from "./logger";
 import { isElectron } from "./platform";
 import { authAPI, type DeviceInfo } from "./electron-api";
 import { clearWebInputDrafts } from "../stores/session";
+import { inspectGatewayResponse, isDevTunnelLocation, probeTunnelAuth } from "./tunnel-auth";
 
 // ============================================================================
 // Types
@@ -187,16 +188,22 @@ export class Auth {
       }
 
       // Browser uses HTTP
+      const onDevTunnel = isDevTunnelLocation();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10_000);
       try {
         const response = await fetch("/api/auth/validate", {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
+          ...(onDevTunnel ? { redirect: "manual" as const } : {}),
           signal: controller.signal,
         });
 
         if (this.getToken() !== token) return this.isAuthenticated();
+
+        if (onDevTunnel && inspectGatewayResponse(response) !== "ok") {
+          return this.isAuthenticated();
+        }
 
         if (response.status === 401) {
           this.clearAuth();
@@ -428,13 +435,16 @@ export class Auth {
     try {
       const response = await fetch("/api/system/is-local");
       if (response.ok) {
+        inspectGatewayResponse(response);
         const data = await response.json();
         this.isLocalCache = data.isLocal === true;
         return this.isLocalCache;
       }
+      inspectGatewayResponse(response);
       return false;
     } catch (err) {
       logger.error("Check local access error:", err);
+      void probeTunnelAuth();
       return false;
     }
   }
@@ -494,6 +504,10 @@ export class Auth {
         body: JSON.stringify({ code, device: deviceInfo }),
       });
 
+      if (inspectGatewayResponse(response) !== "ok") {
+        return { success: false, error: "Authentication required" };
+      }
+
       const data: AccessRequestResponse = await response.json();
 
       if (response.ok && data.success && data.requestId) {
@@ -503,6 +517,7 @@ export class Auth {
       }
     } catch (err) {
       logger.error("Request access error:", err);
+      await probeTunnelAuth();
       return { success: false, error: "Network error" };
     }
   }

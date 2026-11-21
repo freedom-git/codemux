@@ -2,6 +2,7 @@ import { onMount, onCleanup } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { Auth } from "./auth";
 import { logger } from "./logger";
+import { tunnelAuthRedirecting } from "./tunnel-auth";
 
 /**
  * Hook to verify device token on page mount.
@@ -16,8 +17,8 @@ export function useAuthGuard(pageName: string): void {
 
   onMount(async () => {
     const isValidToken = await Auth.checkDeviceToken();
-    if (disposed) {
-      logger.debug(`[${pageName}] Component disposed during token check, skipping redirect`);
+    if (disposed || tunnelAuthRedirecting()) {
+      logger.debug(`[${pageName}] Component disposed or redirecting during token check, skipping redirect`);
       return;
     }
     if (!isValidToken) {

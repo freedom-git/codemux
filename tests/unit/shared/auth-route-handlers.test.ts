@@ -75,6 +75,28 @@ describe('auth-route-handlers', () => {
     });
   });
 
+  describe('GET /api/auth/tunnel-return', () => {
+    it.each([
+      ['/chat?tab=1#latest', '/chat?tab=1#latest'],
+      ['/settings', '/settings'],
+      ['', '/'],
+      ['https://evil.example/phish', '/'],
+      ['//evil.example/phish', '/'],
+      ['/\\evil.example', '/'],
+      ['/api/auth/tunnel-return?returnTo=/chat', '/'],
+      ['/ws', '/'],
+    ])('redirects %s safely to %s without caching', async (returnTo, expectedLocation) => {
+      const target = returnTo ? `/api/auth/tunnel-return?returnTo=${encodeURIComponent(returnTo)}` : '/api/auth/tunnel-return';
+      const url = getUrlParams(target);
+      expect(await handleAuthRoutes(createMockReq(target), mockRes, '/api/auth/tunnel-return', url, mockStore, mockOptions)).toBe(true);
+      expect(mockRes.writeHead).toHaveBeenCalledWith(302, {
+        Location: expectedLocation,
+        'Cache-Control': 'no-store',
+      });
+      expect(mockRes.end).toHaveBeenCalled();
+    });
+  });
+
   describe('GET /api/auth/validate', () => {
     it('validates tokens correctly for various scenarios', async () => {
       const pathname = '/api/auth/validate';

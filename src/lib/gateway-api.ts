@@ -8,6 +8,7 @@
 import { gatewayClient } from "./gateway-client";
 import { GatewayRequestType } from "../types/unified";
 import { logger } from "./logger";
+import { clearTunnelAuthIssue, isDevTunnelLocation, probeTunnelAuth } from "./tunnel-auth";
 import { createSignal, untrack } from "solid-js";
 import { configStore } from "../stores/config";
 import { beginPendingSessionSend, sessionStore, setSendingFor } from "../stores/session";
@@ -286,6 +287,7 @@ class GatewayAPI {
 
   private bindEvents(): void {
     this.bind("connected", () => {
+      clearTunnelAuthIssue();
       _setGatewayConnected(true);
       this.handlers.onConnected?.();
     });
@@ -293,6 +295,9 @@ class GatewayAPI {
     this.bind("disconnected", (reason) => {
       this.releasePendingSends();
       _setGatewayConnected(false);
+      if (isDevTunnelLocation()) {
+        void probeTunnelAuth();
+      }
       this.handlers.onDisconnected?.(reason);
     });
 
