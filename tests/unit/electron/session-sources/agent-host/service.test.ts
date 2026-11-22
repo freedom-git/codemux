@@ -3,7 +3,7 @@ import type { ChatInputRequest, ChatState } from "@microsoft/agent-host-protocol
 import { AgentHostConnection } from "../../../../../electron/main/session-sources/agent-host/connection";
 import { AgentHostService } from "../../../../../electron/main/session-sources/agent-host/service";
 import { parseEndpoint } from "../../../../../electron/main/session-sources/agent-host/discovery";
-import { inputAnswers, nativeChatId, projectChat } from "../../../../../electron/main/session-sources/agent-host/projection";
+import { inputAnswers, nativeChatId, projectChat, projectInputs } from "../../../../../electron/main/session-sources/agent-host/projection";
 import { createAgentHostFixture } from "./fixture";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -325,5 +325,96 @@ describe("native projection", () => {
     expect(() => inputAnswers(request, [["bad"], ["2"], ["x"]])).toThrow();
     expect(() => inputAnswers(request, [["Visible choice"], ["2.5"], ["x"]])).toThrow();
     expect(() => inputAnswers(request, [[], ["2"], ["x"]])).toThrow();
+  });
+
+  it("projects optional ask_user questions as skippable without enabling invalid freeform empty strings", () => {
+    const request: ChatInputRequest = {
+      id: "ask-user-form",
+      message: "Confirm mobile context menu design",
+      questions: [
+        {
+          id: "desktopRightClick",
+          kind: "single-select",
+          title: "Desktop right click",
+          message: "Enable desktop right click?",
+          required: false,
+          allowFreeformInput: true,
+          options: [
+            { id: "true", label: "True", recommended: true },
+            { id: "false", label: "False" },
+          ],
+        },
+        {
+          id: "extraTargets",
+          kind: "text",
+          title: "Extra targets",
+          message: "Optional extra areas",
+          required: false,
+        },
+        {
+          id: "menuStyle",
+          kind: "single-select",
+          title: "Menu style",
+          message: "Choose menu style",
+          required: false,
+          options: [
+            { id: "bottom_sheet", label: "Bottom Sheet" },
+            { id: "popover", label: "Popover" },
+          ],
+        },
+        {
+          id: "requiredEmptyText",
+          kind: "text",
+          message: "Required text allowing empty",
+          required: true,
+          min: 0,
+        },
+      ],
+    };
+    const chat = {
+      resource: "ahp-chat:/q",
+      title: "Q",
+      status: 6,
+      modifiedAt: "2026-11-22T00:00:00Z",
+      turns: [],
+      activeTurn: {
+        id: "t1",
+        startedAt: "2026-11-22T00:00:00Z",
+        message: { text: "hi", origin: { kind: "user" } },
+        responseParts: [{ kind: "inputRequest", request }],
+      },
+    } as ChatState;
+
+    const projected = projectInputs("conv-1", chat, "copilot").questions[0].question;
+    expect(projected.questions[0]).toMatchObject({
+      required: false,
+      custom: true,
+      allowEmptyAnswer: false,
+      defaultSelected: ["True"],
+    });
+    expect(projected.questions[1]).toMatchObject({
+      required: false,
+      custom: true,
+      preserveWhitespace: true,
+      allowEmptyAnswer: false,
+    });
+    expect(projected.questions[2]).toMatchObject({
+      required: false,
+      custom: false,
+      allowEmptyAnswer: false,
+    });
+    expect(projected.questions[3]).toMatchObject({
+      required: true,
+      custom: true,
+      allowEmptyAnswer: true,
+    });
+
+    // Submitting with optional fields skipped ([]) and required empty text ([""]) succeeds cleanly.
+    expect(inputAnswers(request, [["True"], [], [], [""]])).toEqual({
+      desktopRightClick: { state: "submitted", value: { kind: "selected", value: "true" } },
+      extraTargets: { state: "skipped" },
+      menuStyle: { state: "skipped" },
+      requiredEmptyText: { state: "submitted", value: { kind: "text", value: "" } },
+    });
   });
 });

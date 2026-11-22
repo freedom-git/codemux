@@ -2517,6 +2517,7 @@ export default function Chat() {
       setMessageStore("question", sessionID, existing.filter(q => q.id !== questionID));
     } catch (error) {
       logger.error("[Question] Failed to respond:", error);
+      notify(error instanceof Error ? error.message : String(error), "error", 5000);
     }
   };
 
@@ -2535,6 +2536,7 @@ export default function Chat() {
       setMessageStore("question", sessionID, existing.filter(q => q.id !== questionID));
     } catch (error) {
       logger.error("[Question] Failed to dismiss:", error);
+      notify(error instanceof Error ? error.message : String(error), "error", 5000);
     }
   };
 

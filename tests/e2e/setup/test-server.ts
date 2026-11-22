@@ -156,6 +156,8 @@ export async function startTestServer(
   const activeRequests = new Map<string, number>();
   /** permissionId -> engineType */
   const permissionEngineMap = new Map<string, EngineType>();
+  /** questionId -> engineType */
+  const questionEngineMap = new Map<string, EngineType>();
   /** directory -> engineType project bindings */
   const projectBindings = new Map<string, EngineType>();
 
@@ -231,6 +233,17 @@ export async function startTestServer(
 
     adapter.on("permission.replied", (data) => {
       broadcast({ type: GatewayNotificationType.PERMISSION_REPLIED, payload: data });
+    });
+
+    adapter.on("question.asked", (data) => {
+      if (data.question?.id) {
+        questionEngineMap.set(data.question.id, adapter.engineType);
+      }
+      broadcast({ type: GatewayNotificationType.QUESTION_ASKED, payload: data });
+    });
+
+    adapter.on("question.replied", (data) => {
+      broadcast({ type: GatewayNotificationType.QUESTION_REPLIED, payload: data });
     });
 
     adapter.on("status.changed", (data) => {
@@ -349,10 +362,11 @@ export async function startTestServer(
 
       case GatewayRequestType.PENDING_LIST: {
         const adapter = getAdapterForSession(p.sessionId);
-        return {
-          permissions: await adapter.getPendingPermissions(p.sessionId),
-          questions: await adapter.getPendingQuestions(p.sessionId),
-        };
+        const permissions = await adapter.getPendingPermissions(p.sessionId);
+        const questions = await adapter.getPendingQuestions(p.sessionId);
+        for (const perm of permissions) permissionEngineMap.set(perm.id, adapter.engineType);
+        for (const q of questions) questionEngineMap.set(q.id, adapter.engineType);
+        return { permissions, questions };
       }
 
       case GatewayRequestType.MESSAGE_CANCEL: {
@@ -459,6 +473,35 @@ export async function startTestServer(
         const adapter = adapters.get(engineType)!;
         permissionEngineMap.delete(req.permissionId);
         await adapter.replyPermission(req.permissionId, { optionId: req.optionId });
+        return { success: true };
+      }
+
+      // --- Question ---
+      case GatewayRequestType.QUESTION_REPLY: {
+        const engineType = questionEngineMap.get(p.questionId as string);
+        if (!engineType) {
+          throw Object.assign(
+            new Error(`No engine binding found for question: ${p.questionId}`),
+            { code: "QUESTION_NOT_FOUND" },
+          );
+        }
+        const adapter = adapters.get(engineType)!;
+        questionEngineMap.delete(p.questionId as string);
+        await adapter.replyQuestion(p.questionId as string, p.answers as string[][]);
+        return { success: true };
+      }
+
+      case GatewayRequestType.QUESTION_REJECT: {
+        const engineType = questionEngineMap.get(p.questionId as string);
+        if (!engineType) {
+          throw Object.assign(
+            new Error(`No engine binding found for question: ${p.questionId}`),
+            { code: "QUESTION_NOT_FOUND" },
+          );
+        }
+        const adapter = adapters.get(engineType)!;
+        questionEngineMap.delete(p.questionId as string);
+        await adapter.rejectQuestion(p.questionId as string);
         return { success: true };
       }
 

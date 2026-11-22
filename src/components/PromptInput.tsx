@@ -620,7 +620,7 @@ export function PromptInput(props: PromptInputProps) {
                   />
                   <button
                     onClick={() => removeImage(img.id)}
-                    class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity"
                     aria-label={t().prompt.removeImage}
                   >
                     ✕

@@ -1,7 +1,12 @@
-import { createSignal, createMemo, For, Show } from "solid-js";
+import { createEffect, createSignal, createMemo, For, Show } from "solid-js";
 import type { UnifiedQuestion } from "../types/unified";
 import { formatMessage, useI18n } from "../lib/i18n";
-import { getQuestionContext } from "./input-area-context";
+import {
+  buildQuestionAnswers,
+  canSubmitQuestions,
+  findMissingRequiredQuestionIndex,
+  getQuestionContext,
+} from "./input-area-context";
 import styles from "./InputAreaQuestion.module.css";
 
 interface InputAreaQuestionProps {
@@ -28,14 +33,22 @@ export function InputAreaQuestion(props: InputAreaQuestionProps) {
   const [pageIndex, setPageIndex] = createSignal(0);
 
   // Selection state per question: selections[i] = array of selected option labels
-  const [selections, setSelections] = createSignal<string[][]>(
-    props.question.questions.map(() => []),
-  );
+  const [selections, setSelections] = createSignal<string[][]>([]);
 
   // Custom text input per question
-  const [customInputs, setCustomInputs] = createSignal<string[]>(
-    props.question.questions.map(() => ""),
-  );
+  const [customInputs, setCustomInputs] = createSignal<string[]>([]);
+
+  let lastQuestionId: string | undefined;
+  createEffect(() => {
+    const nextId = props.question.id;
+    const qs = props.question.questions;
+    if (nextId !== lastQuestionId) {
+      lastQuestionId = nextId;
+      setPageIndex(0);
+      setSelections(qs.map((q) => [...(q.defaultSelected ?? [])]));
+      setCustomInputs(qs.map((q) => q.defaultCustom ?? ""));
+    }
+  });
 
   // Current question info
   const currentQ = () => props.question.questions[pageIndex()];
@@ -44,11 +57,13 @@ export function InputAreaQuestion(props: InputAreaQuestionProps) {
 
   const toggleOption = (label: string) => {
     const qi = pageIndex();
+    const multi = isMultiSelect();
+    let cleared = false;
     setSelections((prev) => {
       const updated = [...prev];
       const current = [...(updated[qi] || [])];
 
-      if (isMultiSelect()) {
+      if (multi) {
         const idx = current.indexOf(label);
         if (idx >= 0) {
           current.splice(idx, 1);
@@ -62,10 +77,19 @@ export function InputAreaQuestion(props: InputAreaQuestionProps) {
           updated[qi] = [];
         } else {
           updated[qi] = [label];
+          cleared = true;
         }
       }
       return updated;
     });
+    if (cleared) {
+      setCustomInputs((prev) => {
+        if (!prev[qi]) return prev;
+        const updated = [...prev];
+        updated[qi] = "";
+        return updated;
+      });
+    }
   };
 
   const setCustomInput = (value: string) => {
@@ -75,28 +99,26 @@ export function InputAreaQuestion(props: InputAreaQuestionProps) {
       updated[qi] = value;
       return updated;
     });
+    const normalized = currentQ()?.preserveWhitespace ? value : value.trim();
+    if (!isMultiSelect() && normalized.length > 0) {
+      setSelections((prev) => {
+        if (!(prev[qi]?.length)) return prev;
+        const updated = [...prev];
+        updated[qi] = [];
+        return updated;
+      });
+    }
   };
 
-  // Check if any question has at least one answer
-  const hasAnyAnswer = () => {
-    return props.question.questions.some((question, i) => {
-      const selected = selections()[i] || [];
-      const raw = customInputs()[i] ?? "";
-      const custom = question.preserveWhitespace ? raw : raw.trim();
-      return selected.length > 0 || (question.custom !== false
-        && (custom.length > 0 || question.allowEmptyAnswer === true));
-    });
-  };
+  const canSubmit = () => canSubmitQuestions(props.question.questions, selections(), customInputs());
 
   const handleSubmit = () => {
-    const answers = props.question.questions.map((question, i) => {
-      const selected = selections()[i] || [];
-      const raw = customInputs()[i] ?? "";
-      const custom = question.preserveWhitespace ? raw : raw.trim();
-      if (custom) return [...selected, custom];
-      if (question.custom !== false && question.allowEmptyAnswer && selected.length === 0) return [""];
-      return [...selected];
-    });
+    const missingIdx = findMissingRequiredQuestionIndex(props.question.questions, selections(), customInputs());
+    if (missingIdx >= 0) {
+      setPageIndex(missingIdx);
+      return;
+    }
+    const answers = buildQuestionAnswers(props.question.questions, selections(), customInputs());
     props.onRespond(props.question.sessionId, props.question.id, answers);
   };
 
@@ -257,7 +279,7 @@ export function InputAreaQuestion(props: InputAreaQuestionProps) {
               value={customInputs()[pageIndex()] || ""}
               onInput={(e) => setCustomInput(e.currentTarget.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.isComposing && hasAnyAnswer()) {
+                if (e.key === "Enter" && !e.isComposing && canSubmit()) {
                   e.preventDefault();
                   if (isLastPage()) {
                     handleSubmit();
@@ -295,7 +317,7 @@ export function InputAreaQuestion(props: InputAreaQuestionProps) {
             type="button"
             class={styles.btnSubmit}
             onClick={handleSubmit}
-            disabled={!hasAnyAnswer()}
+            disabled={!canSubmit()}
           >
             {t().question.submit}
           </button>

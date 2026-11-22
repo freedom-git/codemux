@@ -3,6 +3,11 @@ import { useI18n } from "../lib/i18n";
 import { scheduledTaskStore, setScheduledTaskStore } from "../stores/scheduled-task";
 import { getEngineBadge } from "./share/common";
 import type { ScheduledTask } from "../types/unified";
+import {
+  ContextMenu,
+  createContextMenuTrigger,
+  type ContextMenuState,
+} from "./ContextMenu";
 
 interface ScheduledTaskSectionProps {
   tasks: ScheduledTask[];
@@ -19,6 +24,21 @@ export function ScheduledTaskSection(props: ScheduledTaskSectionProps) {
   const { t } = useI18n();
   const [pendingDeleteId, setPendingDeleteId] = createSignal<string | null>(null);
   const [runningTaskId, setRunningTaskId] = createSignal<string | null>(null);
+  const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
+
+  const headerMenuTrigger = createContextMenuTrigger(() => ({
+    title: t().scheduledTask.title,
+    items: [{
+      id: "create-task",
+      label: t().scheduledTask.create,
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14" /><path d="M12 5v14" />
+        </svg>
+      ),
+      onSelect: () => props.onCreateTask(),
+    }],
+  }), setContextMenu);
 
   // Tick signal — forces countdown recalculation every 30s
   const [tick, setTick] = createSignal(0);
@@ -115,7 +135,8 @@ export function ScheduledTaskSection(props: ScheduledTaskSectionProps) {
     <div class="mb-2 pb-2 border-b border-[var(--cm-hairline-strong)]">
       {/* Section Header */}
       <div
-        class="group flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] transition-colors"
+        {...headerMenuTrigger}
+        class="group flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] transition-colors [-webkit-touch-callout:none] select-none"
         onClick={toggleExpanded}
       >
         <div class="flex items-center gap-2 min-w-0 flex-1">
@@ -156,7 +177,7 @@ export function ScheduledTaskSection(props: ScheduledTaskSectionProps) {
 
         {/* Create task button */}
         <button
-          class="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-all opacity-0 group-hover:opacity-100"
+          class="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-all opacity-0 group-hover:opacity-100 [@media(pointer:coarse)]:opacity-100"
           onClick={(e) => {
             e.stopPropagation();
             props.onCreateTask();
@@ -197,9 +218,69 @@ export function ScheduledTaskSection(props: ScheduledTaskSectionProps) {
                     }
                   };
 
+                  const taskMenuTrigger = createContextMenuTrigger(() => ({
+                    title: task.name,
+                    items: [
+                      {
+                        id: "run-now",
+                        label: t().scheduledTask.runNow,
+                        disabled: runningTaskId() === task.id,
+                        icon: (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                          </svg>
+                        ),
+                        onSelect: () => {
+                          setRunningTaskId(task.id);
+                          props.onRunNow(task.id);
+                          setTimeout(() => setRunningTaskId((cur) => (cur === task.id ? null : cur)), 2000);
+                        },
+                      },
+                      {
+                        id: "toggle-enabled",
+                        label: task.enabled ? t().scheduledTask.disable : t().scheduledTask.enable,
+                        icon: (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <Show when={task.enabled} fallback={<circle cx="12" cy="12" r="10" />}>
+                              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                              <polyline points="22 4 12 14.01 9 11.01" />
+                            </Show>
+                          </svg>
+                        ),
+                        onSelect: () => props.onToggleEnabled(task.id, !task.enabled),
+                      },
+                      {
+                        id: "edit-task",
+                        label: t().scheduledTask.edit,
+                        icon: (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                            <path d="m15 5 4 4" />
+                          </svg>
+                        ),
+                        onSelect: () => props.onEditTask(task),
+                      },
+                      {
+                        id: "delete-task",
+                        label: t().scheduledTask.delete,
+                        danger: true,
+                        separatorBefore: true,
+                        confirmLabel: t().common.confirm,
+                        cancelLabel: t().common.cancel,
+                        icon: (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                          </svg>
+                        ),
+                        onSelect: () => props.onDeleteTask(task.id),
+                      },
+                    ],
+                  }), setContextMenu);
+
                   return (
                     <div
-                      class="group relative px-3 py-2 mb-0.5 rounded-md cursor-pointer transition-all duration-150 hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04]"
+                      {...taskMenuTrigger}
+                      class="group relative px-3 py-2 mb-0.5 rounded-md cursor-pointer transition-all duration-150 hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] [-webkit-touch-callout:none] select-none"
                       onClick={handleClick}
                     >
                       {/* Line 1: Status dot + Name */}
@@ -355,6 +436,7 @@ export function ScheduledTaskSection(props: ScheduledTaskSectionProps) {
           </div>
         </div>
       </div>
+      <ContextMenu state={contextMenu()} onClose={() => setContextMenu(null)} />
     </div>
     </Show>
   );

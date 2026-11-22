@@ -126,14 +126,33 @@ export function projectInputs(id: string, chat: ChatState, engineType: EngineTyp
       questions.push({ turnId, request, question: {
         id: scopedId(id, turnId, request.id), sessionId: id, engineType, externalUrl, dismissStopsTurn: false,
         message: request.message,
-        questions: (request.questions ?? []).map(question => ({
-          question: question.message, header: question.title ?? question.message.slice(0, 30),
-          options: "options" in question ? question.options.map(option => ({ label: option.label, description: option.description ?? "" }))
-            : question.kind === "boolean" ? [{ label: "true", description: "" }, { label: "false", description: "" }] : [],
-          multiple: question.kind === "multi-select",
-          custom: "allowFreeformInput" in question ? question.allowFreeformInput === true : question.kind !== "boolean",
-          preserveWhitespace: question.kind === "text", allowEmptyAnswer: question.required !== true,
-        })),
+        questions: (request.questions ?? []).map(question => {
+          const isSelect = question.kind === "single-select" || question.kind === "multi-select";
+          const recommended = isSelect
+            ? question.options.filter(option => option.recommended).map(option => option.label)
+            : [];
+          const defaultSelected = isSelect && recommended.length > 0
+            ? (question.kind === "single-select" ? recommended.slice(0, 1) : recommended)
+            : question.kind === "boolean" && question.defaultValue !== undefined
+              ? [String(question.defaultValue)]
+              : undefined;
+          const defaultCustom = (question.kind === "text" || question.kind === "number" || question.kind === "integer")
+            && question.defaultValue !== undefined
+            ? String(question.defaultValue)
+            : undefined;
+          return {
+            question: question.message, header: question.title ?? question.message.slice(0, 30),
+            options: isSelect ? question.options.map(option => ({ label: option.label, description: option.description ?? "" }))
+              : question.kind === "boolean" ? [{ label: "true", description: "" }, { label: "false", description: "" }] : [],
+            multiple: question.kind === "multi-select",
+            required: question.required === true,
+            custom: isSelect ? question.allowFreeformInput === true : question.kind !== "boolean",
+            preserveWhitespace: question.kind === "text",
+            allowEmptyAnswer: question.kind === "text" && question.required === true && (question.min ?? 0) === 0,
+            ...(defaultSelected ? { defaultSelected } : {}),
+            ...(defaultCustom !== undefined ? { defaultCustom } : {}),
+          };
+        }),
       } });
     }
   }

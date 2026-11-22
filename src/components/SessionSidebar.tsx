@@ -23,6 +23,12 @@ import { setOrchestrationStore, orchestrationStore } from "../stores/orchestrati
 
 import { isElectron } from "../lib/platform";
 import { systemAPI } from "../lib/electron-api";
+import {
+  ContextMenu,
+  createContextMenuTrigger,
+  type ContextMenuItem,
+  type ContextMenuState,
+} from "./ContextMenu";
 
 interface SessionSidebarProps {
   sessions: SessionInfo[];
@@ -80,6 +86,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
   const [editingTitle, setEditingTitle] = createSignal("");
   const [pendingDeleteId, setPendingDeleteId] = createSignal<string | null>(null);
   const [searchQuery, setSearchQuery] = createSignal("");
+  const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const archiveSessions = createMemo(() => props.sessions.filter((session) => (session.archived === true) === (props.showArchived === true)));
   const projectView = createMemo(() => buildSessionProjectView(archiveSessions(), props.projects, Object.values(sessionStore.catalogs)));
   const visibleSessions = createMemo(() => visibleSessionsForProjectPaths(
@@ -89,6 +96,103 @@ export function SessionSidebar(props: SessionSidebarProps) {
     const capabilities = configStore.engines.find((engine) => engine.type === session.engineType)?.capabilities;
     return session.connection?.localRemovalOnly || (!session.catalogSourceId && !capabilities?.hideArchivedSessions && capabilities?.authoritativeSessionState)
       ? t().sidebar.removeLocalSession : t().sidebar.deleteSession;
+  };
+
+  const CopyIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </svg>
+  );
+  const RenameIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" />
+    </svg>
+  );
+  const PinIcon = (p: { pinned: boolean }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.pinned ? "currentColor" : "none"} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </svg>
+  );
+  const TrashIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </svg>
+  );
+  const PlusIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12h14" /><path d="M12 5v14" />
+    </svg>
+  );
+  const FolderIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  );
+  const TeamIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <line x1="19" x2="19" y1="8" y2="14" />
+      <line x1="22" x2="16" y1="11" y2="11" />
+    </svg>
+  );
+  const WorktreeBranchIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 3v12" /><path d="M18 9a3 3 0 0 0-3-3h-4a3 3 0 0 0-3 3" /><circle cx="18" cy="18" r="3" /><path d="M6 21v-6" />
+    </svg>
+  );
+  const MergeIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 21V8a2 2 0 0 0-2-2H8" /><path d="m6 9 3-3-3-3" />
+    </svg>
+  );
+
+  const buildSessionContextMenu = (
+    session: SessionInfo,
+    pinned: boolean,
+    beginRename: () => void,
+  ): { title: string; items: ContextMenuItem[] } | null => {
+    if (editingSessionId() === session.id) return null;
+    const items: ContextMenuItem[] = [
+      {
+        id: "copy-session-id",
+        label: t().sidebar.copySessionId,
+        icon: <CopyIcon />,
+        onSelect: () => { navigator.clipboard.writeText(session.id).catch(() => {}); },
+      },
+    ];
+    if (session.connection?.canRename !== false) {
+      items.push({
+        id: "rename-session",
+        label: t().sidebar.renameSession,
+        icon: <RenameIcon />,
+        disabled: session.catalogAvailable === false,
+        onSelect: beginRename,
+      });
+    }
+    if (props.onPinSession && props.onUnpinSession) {
+      items.push({
+        id: "toggle-pin-session",
+        label: pinned ? t().sidebar.unpinSession : t().sidebar.pinSession,
+        icon: <PinIcon pinned={pinned} />,
+        onSelect: () => {
+          if (pinned) props.onUnpinSession!(session.id);
+          else props.onPinSession!(session.id);
+        },
+      });
+    }
+    items.push({
+      id: "delete-session",
+      label: sessionRemovalLabel(session),
+      icon: <TrashIcon />,
+      danger: true,
+      separatorBefore: true,
+      confirmLabel: t().common.confirm,
+      cancelLabel: t().common.cancel,
+      onSelect: () => props.onDeleteSession(session.id),
+    });
+    return { title: getDisplayTitle(session.title), items };
   };
 
   const StatusIndicator = (p: { status: SessionActivityStatus }) => {
@@ -555,10 +659,14 @@ export function SessionSidebar(props: SessionSidebarProps) {
                   const projectName = () => getProjectNameForSession(session);
                   const isEditing = () => editingSessionId() === session.id;
 
-                  const startEditing = (e: MouseEvent) => {
-                    e.stopPropagation();
+                  const beginRename = () => {
                     setEditingSessionId(session.id);
                     setEditingTitle(session.title || "");
+                  };
+
+                  const startEditing = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    beginRename();
                   };
 
                   const saveTitle = () => {
@@ -576,9 +684,17 @@ export function SessionSidebar(props: SessionSidebarProps) {
                     else if (e.key === "Escape") cancelEditing();
                   };
 
+                  const sessionMenuTrigger = createContextMenuTrigger(
+                    () => buildSessionContextMenu(session, isPinned(), beginRename),
+                    setContextMenu,
+                  );
+
                   return (
                     <div
-                      class={`group relative px-2.5 py-1.5 mb-px rounded-lg cursor-pointer transition-colors duration-150 ${
+                      {...sessionMenuTrigger}
+                      class={`group relative px-2.5 py-1.5 mb-px rounded-lg cursor-pointer transition-colors duration-150 [-webkit-touch-callout:none] ${
+                        isEditing() ? "" : "select-none"
+                      } ${
                         isActive()
                           ? "bg-gray-900/[0.05] dark:bg-white/[0.065] ring-1 ring-inset ring-[var(--cm-hairline)] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-[image:var(--cm-gradient)]"
                           : "hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04]"
@@ -614,6 +730,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
                           }
                         >
                           <input
+                            ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
                             type="text"
                             value={editingTitle()}
                             onInput={(e) => setEditingTitle(e.currentTarget.value)}
@@ -851,11 +968,34 @@ export function SessionSidebar(props: SessionSidebarProps) {
           <Show when={filteredDefaultWorkspaceGroup()}>
             {(dwg) => {
               const isExpanded = () => isSearching() || isProjectExpanded(dwg().projectID);
+              const dwgMenuTrigger = createContextMenuTrigger(() => {
+                const group = dwg();
+                const dir = group.project ? getProjectDirectory(group.project) : undefined;
+                const items: ContextMenuItem[] = [
+                  {
+                    id: "new-session",
+                    label: props.newSessionPending ? t().common.loading : t().sidebar.newSession,
+                    icon: <PlusIcon />,
+                    disabled: props.newSessionPending,
+                    onSelect: () => props.onNewSession(dir),
+                  },
+                ];
+                if (props.onNewTeamTask) {
+                  items.push({
+                    id: "new-team-task",
+                    label: t().chat.teamTask,
+                    icon: <TeamIcon />,
+                    onSelect: () => props.onNewTeamTask?.(dir),
+                  });
+                }
+                return { title: group.name, items };
+              }, setContextMenu);
               return (
                 <div class="mb-2">
                   {/* Default Workspace Header */}
                   <div
-                    class="group flex items-center justify-between px-2 py-1.5 rounded-lg cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] transition-colors"
+                    {...dwgMenuTrigger}
+                    class="group flex items-center justify-between px-2 py-1.5 rounded-lg cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] transition-colors [-webkit-touch-callout:none] select-none"
                     onMouseEnter={() => setHoveredProject(dwg().projectID)}
                     onMouseLeave={() => setHoveredProject(null)}
                     onClick={() => toggleProjectExpanded(dwg().projectID)}
@@ -943,10 +1083,14 @@ export function SessionSidebar(props: SessionSidebarProps) {
                             const isPinned = () => props.pinnedSessionIds?.has(session.id) ?? false;
                             const isEditing = () => editingSessionId() === session.id;
 
-                            const startEditing = (e: MouseEvent) => {
-                              e.stopPropagation();
+                            const beginRename = () => {
                               setEditingSessionId(session.id);
                               setEditingTitle(session.title || "");
+                            };
+
+                            const startEditing = (e: MouseEvent) => {
+                              e.stopPropagation();
+                              beginRename();
                             };
 
                             const saveTitle = () => {
@@ -964,9 +1108,17 @@ export function SessionSidebar(props: SessionSidebarProps) {
                               else if (e.key === "Escape") cancelEditing();
                             };
 
+                            const sessionMenuTrigger = createContextMenuTrigger(
+                              () => buildSessionContextMenu(session, isPinned(), beginRename),
+                              setContextMenu,
+                            );
+
                             return (
                               <div
-                                class={`group relative px-2.5 py-1.5 mb-px rounded-lg cursor-pointer transition-colors duration-150 ${
+                                {...sessionMenuTrigger}
+                                class={`group relative px-2.5 py-1.5 mb-px rounded-lg cursor-pointer transition-colors duration-150 [-webkit-touch-callout:none] ${
+                                  isEditing() ? "" : "select-none"
+                                } ${
                                   isActive()
                                     ? "bg-gray-900/[0.05] dark:bg-white/[0.065] ring-1 ring-inset ring-[var(--cm-hairline)] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-[image:var(--cm-gradient)]"
                                     : "hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04]"
@@ -1002,6 +1154,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
                                     }
                                   >
                                     <input
+                                      ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
                                       type="text"
                                       value={editingTitle()}
                                       onInput={(e) => setEditingTitle(e.currentTarget.value)}
@@ -1158,12 +1311,68 @@ export function SessionSidebar(props: SessionSidebarProps) {
             {(project) => {
               const isHovered = () => hoveredProject() === project.projectID;
               const isExpanded = () => isSearching() || isProjectExpanded(project.projectID);
+              const projectMenuTrigger = createContextMenuTrigger(() => {
+                const items: ContextMenuItem[] = [];
+                if (isElectron() && project.project) {
+                  items.push({
+                    id: "open-explorer",
+                    label: t().sidebar.openInFileExplorer,
+                    icon: <FolderIcon />,
+                    onSelect: () => {
+                      const dir = getProjectDirectory(project.project!);
+                      if (dir) systemAPI.openPath(dir);
+                    },
+                  });
+                }
+                items.push({
+                  id: "new-session",
+                  label: props.newSessionPending ? t().common.loading : t().sidebar.newSession,
+                  icon: <PlusIcon />,
+                  disabled: props.newSessionPending,
+                  onSelect: () => props.onNewSession(project.project ? getProjectDirectory(project.project) : undefined),
+                });
+                if (props.onNewTeamTask && !project.project?.catalogSourceId && !projectView().displayOnlyIds.has(project.projectID)) {
+                  items.push({
+                    id: "new-team-task",
+                    label: t().chat.teamTask,
+                    icon: <TeamIcon />,
+                    onSelect: () => props.onNewTeamTask?.(project.project ? getProjectDirectory(project.project) : undefined),
+                  });
+                }
+                if (worktreeEnabled() && project.project?.directory && !project.project.catalogSourceId && !projectView().displayOnlyIds.has(project.projectID)) {
+                  items.push({
+                    id: "manage-worktrees",
+                    label: t().worktree.title,
+                    icon: <WorktreeBranchIcon />,
+                    onSelect: () => {
+                      const dir = getProjectDirectory(project.project!);
+                      if (dir) props.onManageWorktrees?.(dir);
+                    },
+                  });
+                }
+                if (
+                  !projectHasCatalogSessions(project.projectID, props.sessions, projectView().projectIds)
+                  && !project.project?.catalogSourceId
+                  && !projectView().displayOnlyIds.has(project.projectID)
+                ) {
+                  items.push({
+                    id: "hide-project",
+                    label: t().project.hideTitle,
+                    icon: <TrashIcon />,
+                    danger: true,
+                    separatorBefore: true,
+                    onSelect: () => props.onDeleteProjectSessions(project.projectID, project.name, project.sessions.length),
+                  });
+                }
+                return { title: project.name, items };
+              }, setContextMenu);
 
               return (
                 <div class="mb-2">
                   {/* Project Header */}
                   <div
-                    class="group relative flex items-center px-2 py-1.5 rounded-lg cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] transition-colors"
+                    {...projectMenuTrigger}
+                    class="group relative flex items-center px-2 py-1.5 rounded-lg cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] transition-colors [-webkit-touch-callout:none] select-none"
                     onClick={() => toggleProjectExpanded(project.projectID)}
                     title={project.project?.directory || project.sessions[0]?.directory || ""}
                   >
@@ -1332,10 +1541,14 @@ export function SessionSidebar(props: SessionSidebarProps) {
                           const sessionStatus = () =>
                             props.getSessionStatus(session.id);
 
-                          const startEditing = (e: MouseEvent) => {
-                            e.stopPropagation();
+                          const beginRename = () => {
                             setEditingSessionId(session.id);
                             setEditingTitle(session.title || "");
+                          };
+
+                          const startEditing = (e: MouseEvent) => {
+                            e.stopPropagation();
+                            beginRename();
                           };
 
                           const saveTitle = () => {
@@ -1358,9 +1571,17 @@ export function SessionSidebar(props: SessionSidebarProps) {
                             }
                           };
 
+                          const sessionMenuTrigger = createContextMenuTrigger(
+                            () => buildSessionContextMenu(session, isPinned(), beginRename),
+                            setContextMenu,
+                          );
+
                           return (
                             <div
-                              class={`group relative px-2.5 py-1.5 mb-px rounded-lg cursor-pointer transition-colors duration-150 ${
+                              {...sessionMenuTrigger}
+                              class={`group relative px-2.5 py-1.5 mb-px rounded-lg cursor-pointer transition-colors duration-150 [-webkit-touch-callout:none] ${
+                                isEditing() ? "" : "select-none"
+                              } ${
                                 isActive()
                                   ? "bg-gray-900/[0.05] dark:bg-white/[0.065] ring-1 ring-inset ring-[var(--cm-hairline)] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-[image:var(--cm-gradient)]"
                                   : "hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04]"
@@ -1397,6 +1618,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
                                   }
                                 >
                                   <input
+                                    ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
                                     type="text"
                                     value={editingTitle()}
                                     onInput={(e) => setEditingTitle(e.currentTarget.value)}
@@ -1614,10 +1836,52 @@ export function SessionSidebar(props: SessionSidebarProps) {
                                   const childSessions = () => wtGroup.sessions.filter(s => s.id !== parentSession()?.id);
                                   const isOrchestratorActive = () => parentSession()?.id === props.currentSessionId;
 
+                                  const deleteTeamWorktree = () => {
+                                    for (const s of wtGroup.sessions) {
+                                      props.onDeleteSession(s.id);
+                                    }
+                                    gateway.removeWorktree(dir, wtGroup.worktree.name).catch(() => {});
+                                    for (const [projDir, wts] of Object.entries(sessionStore.worktrees)) {
+                                      if (wts.some(wt => wt.name === wtGroup.worktree.name)) {
+                                        setSessionStore("worktrees", projDir, wts.filter(wt => wt.name !== wtGroup.worktree.name));
+                                      }
+                                    }
+                                    const deletedTeamIds = new Set(
+                                      Object.entries(orchestrationStore.teams)
+                                        .filter(([, info]) => info?.worktreeInfo?.name === wtGroup.worktree.name)
+                                        .map(([tid]) => tid)
+                                    );
+                                    if (deletedTeamIds.size > 0) {
+                                      const nextTeams = Object.fromEntries(
+                                        Object.entries(orchestrationStore.teams).filter(([tid]) => !deletedTeamIds.has(tid))
+                                      );
+                                      const nextSessionToTeam = Object.fromEntries(
+                                        Object.entries(orchestrationStore.sessionToTeam).filter(([, tid]) => !deletedTeamIds.has(tid))
+                                      );
+                                      setOrchestrationStore("teams", nextTeams);
+                                      setOrchestrationStore("sessionToTeam", nextSessionToTeam);
+                                    }
+                                    setPendingDeleteId(null);
+                                  };
+
+                                  const teamWorktreeMenuTrigger = createContextMenuTrigger(() => ({
+                                    title: teamLabel(),
+                                    items: [{
+                                      id: "delete-team",
+                                      label: t().sidebar.deleteSession,
+                                      icon: <TrashIcon />,
+                                      danger: true,
+                                      confirmLabel: t().common.confirm,
+                                      cancelLabel: t().common.cancel,
+                                      onSelect: deleteTeamWorktree,
+                                    }],
+                                  }), setContextMenu);
+
                                   return (
                                     <div class="mb-1.5">
                                       <div
-                                        class="group relative flex items-center gap-1.5 px-2 py-1 cursor-pointer rounded-md transition-colors"
+                                        {...teamWorktreeMenuTrigger}
+                                        class="group relative flex items-center gap-1.5 px-2 py-1 cursor-pointer rounded-md transition-colors [-webkit-touch-callout:none] select-none"
                                         classList={{
                                           "bg-gray-900/[0.05] dark:bg-white/[0.065] ring-1 ring-inset ring-[var(--cm-hairline)] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-[image:var(--cm-gradient)]": isOrchestratorActive(),
                                           "hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04]": !isOrchestratorActive(),
@@ -1753,10 +2017,48 @@ export function SessionSidebar(props: SessionSidebarProps) {
                                 }
 
                                 // Normal worktree rendering
+                                const worktreeMenuTrigger = createContextMenuTrigger(() => {
+                                  const items: ContextMenuItem[] = [
+                                    {
+                                      id: "new-session",
+                                      label: props.newSessionPending ? t().common.loading : t().sidebar.newSession,
+                                      icon: <PlusIcon />,
+                                      disabled: props.newSessionPending,
+                                      onSelect: () => props.onNewSession(dir, undefined, wtGroup.worktree.name),
+                                    },
+                                  ];
+                                  if (isElectron()) {
+                                    items.push({
+                                      id: "open-explorer",
+                                      label: t().sidebar.openInFileExplorer,
+                                      icon: <FolderIcon />,
+                                      onSelect: () => { systemAPI.openPath(wtGroup.worktree.directory); },
+                                    });
+                                  }
+                                  items.push(
+                                    {
+                                      id: "merge-worktree",
+                                      label: t().worktree.merge,
+                                      icon: <MergeIcon />,
+                                      onSelect: () => props.onMergeWorktree?.(dir, wtGroup.worktree.name, wtGroup.worktree.branch),
+                                    },
+                                    {
+                                      id: "remove-worktree",
+                                      label: t().worktree.remove,
+                                      icon: <TrashIcon />,
+                                      danger: true,
+                                      separatorBefore: true,
+                                      onSelect: () => props.onRemoveWorktree?.(dir, wtGroup.worktree.name, wtGroup.worktree.branch),
+                                    },
+                                  );
+                                  return { title: wtGroup.worktree.name, items };
+                                }, setContextMenu);
+
                                 return (
                                 <div class="mb-1.5">
                                   <div
-                                    class="group relative flex items-center gap-1.5 px-2 py-1 cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] rounded-md transition-colors"
+                                    {...worktreeMenuTrigger}
+                                    class="group relative flex items-center gap-1.5 px-2 py-1 cursor-pointer hover:bg-gray-900/[0.035] dark:hover:bg-white/[0.04] rounded-md transition-colors [-webkit-touch-callout:none] select-none"
                                     onClick={() => toggleWorktreeExpanded(wtKey)}
                                   >
                                     <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24"
@@ -1912,6 +2214,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
           </div>
         </div>
       </Show>
+      <ContextMenu state={contextMenu()} onClose={() => setContextMenu(null)} />
     </div>
   );
 }

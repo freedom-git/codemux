@@ -643,12 +643,18 @@ export interface QuestionInfo {
   options: QuestionOption[];
   /** Allow selecting multiple options */
   multiple?: boolean;
+  /** Whether answering this question is required before submitting. */
+  required?: boolean;
   /** Allow typing a custom answer (default: true) */
   custom?: boolean;
   /** Preserve whitespace in custom string answers for schema validation. */
   preserveWhitespace?: boolean;
   /** Allow an explicit empty answer; the backend validates its meaning. */
   allowEmptyAnswer?: boolean;
+  /** Pre-selected option labels from schema defaults or recommendations. */
+  defaultSelected?: string[];
+  /** Pre-filled custom input text from schema defaults. */
+  defaultCustom?: string;
 }
 
 export interface UnifiedQuestion {

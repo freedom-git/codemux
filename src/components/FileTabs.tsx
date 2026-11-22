@@ -39,7 +39,7 @@ export function FileTabs() {
                   class={`flex items-center justify-center w-4 h-4 rounded hover:bg-gray-200 dark:hover:bg-slate-700 ${
                     isActive()
                       ? "opacity-60 hover:opacity-100"
-                      : "opacity-0 group-hover:opacity-60 hover:!opacity-100"
+                      : "opacity-0 group-hover:opacity-60 [@media(pointer:coarse)]:opacity-60 hover:!opacity-100"
                   }`}
                   onClick={(e) => handleClose(e, tab.path)}
                   title={t().fileExplorer.closeTab}
