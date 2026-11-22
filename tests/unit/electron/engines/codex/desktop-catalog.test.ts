@@ -350,4 +350,43 @@ describe("CodexDesktopCatalog observation lifecycle", () => {
     expect(listener).not.toHaveBeenCalled();
     await expect(service.createProject({ name: "late", roots: [] })).rejects.toThrow("stopped");
   });
+
+  it("backs off repeated refresh failures and suppresses duplicate error logs until recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new Client();
+      const original = client.request.getMockImplementation()!;
+      const onError = vi.fn();
+      client.request.mockRejectedValue(new Error("Codex CLI not found"));
+      const { service } = catalog(client, { pollIntervalMs: 1_000, onError });
+
+      await expect(service.start()).rejects.toThrow("Codex CLI not found");
+      const callsAfterStart = client.request.mock.calls.length;
+
+      // 1st failure backed off from 1s to 2s.
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(client.request).toHaveBeenCalledTimes(callsAfterStart);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+
+      // 2nd failure backed off to 4s and deduplicates identical error message.
+      const callsAfterFirstPoll = client.request.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(3_999);
+      expect(client.request).toHaveBeenCalledTimes(callsAfterFirstPoll);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.request.mock.calls.length).toBeGreaterThan(callsAfterFirstPoll);
+      expect(onError).toHaveBeenCalledTimes(1);
+
+      // Recovery resets both poll interval (back to 1s) and error deduplication.
+      client.request.mockImplementation(original);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(service.getSnapshot()?.projects).toHaveLength(2);
+
+      client.request.mockRejectedValue(new Error("Codex CLI not found"));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onError).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

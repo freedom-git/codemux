@@ -670,6 +670,57 @@ describe("LocalServerSupervisor", () => {
     }
   });
 
+  it("tolerates transient monitor stalls while the owner process is alive and recovers automatically", async () => {
+    vi.useFakeTimers();
+    try {
+      const instance = supervisor({ startupTimeoutMs: 10_000 });
+      const starting = instance.start();
+      await vi.advanceTimersByTimeAsync(10);
+      await starting;
+      const original = mocks.call.getMockImplementation()!;
+      mocks.call.mockImplementation(async (_dataPath: string, method: string, args: unknown[], options: { timeoutMs?: number; expectedInstanceId?: string }) => {
+        if (method === "host:status") {
+          expect(options.timeoutMs).toBe(5_000);
+          throw new HostControlError("UNAVAILABLE", "Control request timed out");
+        }
+        return original(_dataPath, method, args, options);
+      });
+
+      // First two transient stalls keep the server in ready state without false alarms.
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(instance.getState()).toMatchObject({ phase: "ready", error: null });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(instance.getState()).toMatchObject({ phase: "ready", error: null });
+
+      // Third consecutive stall surfaces error, while continuing to probe the live owner.
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(instance.getState()).toMatchObject({ phase: "error", error: "Local server is no longer available" });
+
+      // Once the event loop unblocks, the supervisor recovers to ready automatically.
+      mocks.call.mockImplementation(original);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(instance.getState()).toMatchObject({ phase: "ready", error: null });
+
+      // If it stalls into error again and the owned process then exits, exit reason wins and stops probing.
+      mocks.call.mockImplementation(async (_dataPath: string, method: string, args: unknown[], options: { timeoutMs?: number; expectedInstanceId?: string }) => {
+        if (method === "host:status") throw new HostControlError("UNAVAILABLE", "Control request timed out");
+        return original(_dataPath, method, args, options);
+      });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(instance.getState()).toMatchObject({ phase: "error", error: "Local server is no longer available" });
+      mocks.call.mockImplementation(original);
+      const callsBeforeExit = mocks.call.mock.calls.length;
+      currentMetadata = null;
+      currentLocked = false;
+      child.emit("exit", 2, null);
+      expect(instance.getState()).toMatchObject({ phase: "error", error: "Local server exited (code 2)" });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(mocks.call).toHaveBeenCalledTimes(callsBeforeExit);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never force-kills an external server that ignores an explicit stop", async () => {
     setOwner(23_456);
     const instance = supervisor({ stopTimeoutMs: 10 });

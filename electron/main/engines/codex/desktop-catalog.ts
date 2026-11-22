@@ -60,6 +60,7 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 1000;
 const MAX_SUPPLEMENTAL_READS = 1000;
 const PREVIEW_TITLE_LIMIT = 120;
+const MAX_POLL_BACKOFF_MS = 30_000;
 const ALL_THREAD_SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
 export const DESKTOP_CATALOG_NOTIFICATION_METHODS = new Set([
   "project/changed", "thread/project/updated", "thread/started", "thread/name/updated",
@@ -87,6 +88,8 @@ export class CodexDesktopCatalog {
   private started = false;
   private stopped = false;
   private dirty = false;
+  private consecutiveFailures = 0;
+  private lastReportedError?: string;
 
   constructor(private readonly options: DesktopCatalogOptions) {
     if (!options.sourceId.trim()) throw new Error("A stable Codex catalog source ID is required");
@@ -112,7 +115,7 @@ export class CodexDesktopCatalog {
       });
     }
     try { await this.refresh(); }
-    finally { this.schedule(this.dirty ? 0 : this.pollIntervalMs); }
+    finally { this.schedule(this.nextPollDelayMs()); }
   }
 
   /** Stops metadata observation only; the caller owns the shared native client. */
@@ -143,7 +146,14 @@ export class CodexDesktopCatalog {
     this.assertRunning();
     if (this.refreshing) return this.refreshing;
     this.dirty = false;
-    const operation = this.readSnapshot().finally(() => {
+    const operation = this.readSnapshot().then((snapshot) => {
+      this.consecutiveFailures = 0;
+      this.lastReportedError = undefined;
+      return snapshot;
+    }, (error: unknown) => {
+      this.consecutiveFailures += 1;
+      throw error;
+    }).finally(() => {
       if (this.refreshing === operation) this.refreshing = undefined;
     });
     this.refreshing = operation;
@@ -381,16 +391,27 @@ export class CodexDesktopCatalog {
     this.mutationTail = pending;
     return pending;
   }
+  private nextPollDelayMs(): number {
+    if (this.dirty) return 0;
+    if (this.consecutiveFailures <= 0) return this.pollIntervalMs;
+    const cap = Math.max(this.pollIntervalMs, MAX_POLL_BACKOFF_MS);
+    return Math.min(cap, this.pollIntervalMs * 2 ** Math.min(this.consecutiveFailures, 4));
+  }
   private schedule(delay: number): void {
     if (!this.started || this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.refresh().catch((error) => this.reportError(error)).finally(() => this.schedule(this.dirty ? 0 : this.pollIntervalMs));
+      void this.refresh().catch((error) => this.reportError(error)).finally(() => this.schedule(this.nextPollDelayMs()));
     }, delay);
     this.timer.unref?.();
   }
-  private reportError(error: unknown): void { this.options.onError?.(error instanceof Error ? error : new Error("Native catalog refresh failed")); }
+  private reportError(error: unknown): void {
+    const normalized = error instanceof Error ? error : new Error("Native catalog refresh failed");
+    if (this.lastReportedError === normalized.message) return;
+    this.lastReportedError = normalized.message;
+    this.options.onError?.(normalized);
+  }
   private assertRunning(): void { if (this.stopped) throw new Error("Codex catalog observation has stopped"); }
 }
 

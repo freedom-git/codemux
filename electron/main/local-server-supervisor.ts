@@ -28,6 +28,8 @@ interface OwnedChild {
 class StartCancelled extends Error {}
 
 const EXTERNAL_RESTART_ERROR = "Restart this server using its original launcher; this desktop app does not own its launch configuration";
+const MONITOR_STATUS_TIMEOUT_MS = 5_000;
+const MONITOR_FAILURE_THRESHOLD = 3;
 
 function isAlive(pid: number): boolean {
   try {
@@ -62,6 +64,7 @@ export class LocalServerSupervisor {
   private preparation: Promise<void> | null = null;
   private startController: AbortController | null = null;
   private monitor: ReturnType<typeof setTimeout> | null = null;
+  private monitorFailures = 0;
   private readonly pollMs: number;
   private readonly startupMs: number;
   private readonly stopMs: number;
@@ -133,6 +136,12 @@ export class LocalServerSupervisor {
   private clearMonitor(): void {
     if (this.monitor) clearTimeout(this.monitor);
     this.monitor = null;
+    this.monitorFailures = 0;
+  }
+
+  private isOwnerProcessAlive(owner: HostControlMetadata): boolean {
+    if (this.child && owner.pid === this.child.process.pid && this.child.exited) return false;
+    return isAlive(owner.pid);
   }
 
   private delay(signal?: AbortSignal): Promise<void> {
@@ -148,9 +157,9 @@ export class LocalServerSupervisor {
     }
   }
 
-  private async status(metadata: HostControlMetadata): Promise<HostRuntimeStatus> {
+  private async status(metadata: HostControlMetadata, timeoutMs = Math.min(1_000, this.startupMs)): Promise<HostRuntimeStatus> {
     const status = await callHost<HostRuntimeStatus>(this.options.dataPath, "host:status", [], {
-      timeoutMs: Math.min(1_000, this.startupMs), expectedInstanceId: metadata.instanceId,
+      timeoutMs, expectedInstanceId: metadata.instanceId,
     });
     if (!status || status.pid !== metadata.pid || status.dataPath !== metadata.dataPath
       || !["starting", "ready", "stopping"].includes(status.phase)
@@ -259,7 +268,8 @@ export class LocalServerSupervisor {
     const exited = (description: string) => {
       record.exited = true;
       record.exitDescription = description;
-      if (this.child === record && this.state.phase === "ready" && this.state.ownership === "owned") {
+      if (this.child === record && (this.state.phase === "ready" || (this.state.phase === "error" && this.monitor !== null))
+        && this.state.ownership === "owned") {
         this.clearMonitor();
         this.setState({ phase: "error", error: description });
       }
@@ -388,18 +398,42 @@ export class LocalServerSupervisor {
   }
 
   private scheduleMonitor(): void {
-    this.clearMonitor();
+    if (this.monitor) clearTimeout(this.monitor);
+    this.monitor = null;
     const owner = this.owner;
     if (!owner) return;
+    const statusTimeoutMs = Math.max(Math.min(MONITOR_STATUS_TIMEOUT_MS, this.startupMs), Math.min(1_000, this.startupMs));
     this.monitor = setTimeout(() => {
       this.monitor = null;
-      void this.status(owner).then(status => {
-        if (this.owner !== owner || this.state.phase !== "ready") return;
+      void this.status(owner, statusTimeoutMs).then(status => {
+        if (this.owner !== owner || (this.state.phase !== "ready" && this.state.phase !== "error")) return;
+        this.monitorFailures = 0;
         if (!status.ready || status.phase !== "ready") {
-          this.setState({ phase: "error", error: "Local server is no longer ready" });
-        } else this.scheduleMonitor();
-      }).catch(() => {
-        if (this.owner === owner && this.state.phase === "ready") {
+          if (this.state.phase === "ready") {
+            this.setState({ phase: "error", error: "Local server is no longer ready" });
+          }
+          if (status.phase !== "stopping" && this.isOwnerProcessAlive(owner)) this.scheduleMonitor();
+        } else {
+          if (this.state.phase === "error") {
+            this.setState({ phase: "ready", error: null });
+          }
+          this.scheduleMonitor();
+        }
+      }).catch((error: unknown) => {
+        if (this.owner !== owner || (this.state.phase !== "ready" && this.state.phase !== "error")) return;
+        const transientUnavailable = error instanceof HostControlError
+          && error.code === "UNAVAILABLE"
+          && this.isOwnerProcessAlive(owner);
+        if (transientUnavailable) {
+          this.monitorFailures += 1;
+          if (this.monitorFailures >= MONITOR_FAILURE_THRESHOLD && this.state.phase === "ready") {
+            this.setState({ phase: "error", error: "Local server is no longer available" });
+          }
+          this.scheduleMonitor();
+          return;
+        }
+        this.monitorFailures = 0;
+        if (this.state.phase === "ready") {
           this.setState({ phase: "error", error: "Local server is no longer available" });
         }
       });
