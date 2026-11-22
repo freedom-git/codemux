@@ -268,6 +268,7 @@ export const zh: LocaleDict = {
     filePreview: "文件预览",
     conversationRegion: "会话内容",
     jumpToLatest: "回到最新消息",
+    jumpToLastQuestion: "回到最后提问",
     newSession: "新会话",
     remoteAccess: "远程连接",
     settings: "设置",

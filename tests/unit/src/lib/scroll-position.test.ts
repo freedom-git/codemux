@@ -19,6 +19,9 @@ import {
   deleteScrollPosition,
   resolveRemountScroll,
   resolveSessionSwitchScroll,
+  computeLastQuestionScrollTarget,
+  resolveLastQuestionJumpDirection,
+  shouldShowJumpToLastQuestion,
 } from "../../../../src/lib/scroll-position";
 
 // ---------------------------------------------------------------------------
@@ -146,3 +149,37 @@ describe("scroll position cache persistence", () => {
     expect(resolveSessionSwitchScroll("session-1")).toEqual({ action: "scrollToBottom" });
   });
 });
+
+describe("last question scroll target calculation", () => {
+  it("shows jump-to-last-question on session entry when a long reply pushes the last question off-screen", () => {
+    // At bottom of a 3000px document in a 600px viewport (scrollTop = 2400),
+    // last question is 900px above viewport top (targetTop = -840, viewportTop = 60).
+    const target = computeLastQuestionScrollTarget({
+      scrollTop: 2400,
+      scrollHeight: 3000,
+      clientHeight: 600,
+      viewportTop: 60,
+      targetTop: -840,
+    });
+    expect(target).toBe(1484);
+    expect(resolveLastQuestionJumpDirection(2400, target)).toBe("up");
+    expect(resolveLastQuestionJumpDirection(100, target)).toBe("down");
+    expect(shouldShowJumpToLastQuestion(2400, target)).toBe(true);
+    // Once scrolled to target, button hides.
+    expect(resolveLastQuestionJumpDirection(1484, target)).toBeNull();
+    expect(shouldShowJumpToLastQuestion(1484, target)).toBe(false);
+  });
+
+  it("returns null for non-scrollable short conversations", () => {
+    const target = computeLastQuestionScrollTarget({
+      scrollTop: 0,
+      scrollHeight: 500,
+      clientHeight: 600,
+      viewportTop: 60,
+      targetTop: 80,
+    });
+    expect(target).toBeNull();
+    expect(shouldShowJumpToLastQuestion(0, target)).toBe(false);
+  });
+});
+

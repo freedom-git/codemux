@@ -82,6 +82,7 @@ export function MessageList(props: MessageListProps) {
 
             return (
               <div
+                data-last-turn={isLastTurn() ? "" : undefined}
                 style={{
                   "content-visibility": isLastTurn() ? "visible" : "auto",
                   "contain-intrinsic-size": "auto 200px",

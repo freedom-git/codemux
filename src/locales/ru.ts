@@ -269,6 +269,7 @@ export const ru: LocaleDict = {
     filePreview: "Просмотр файла",
     conversationRegion: "Переписка",
     jumpToLatest: "К последним сообщениям",
+    jumpToLastQuestion: "К вопросу",
     newSession: "Новая сессия",
     remoteAccess: "Удалённые подключения",
     settings: "Настройки",

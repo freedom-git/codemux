@@ -258,6 +258,7 @@ export interface LocaleDict {
     filePreview: string;
     conversationRegion: string;
     jumpToLatest: string;
+    jumpToLastQuestion: string;
     newSession: string;
     remoteAccess: string;
     settings: string;
@@ -1365,6 +1366,7 @@ export const en: LocaleDict = {
     filePreview: "File preview",
     conversationRegion: "Conversation",
     jumpToLatest: "Jump to latest",
+    jumpToLastQuestion: "Last question",
     newSession: "New Session",
     remoteAccess: "Remote connections",
     settings: "Settings",

@@ -47,3 +47,36 @@ export function resolveSessionSwitchScroll(sessionId: string): ScrollAction {
   }
   return { action: "scrollToBottom" };
 }
+
+export function computeLastQuestionScrollTarget(metrics: {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  viewportTop: number;
+  targetTop: number;
+  topPadding?: number;
+}): number | null {
+  const maxScrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+  if (maxScrollTop <= 24) return null;
+  const rawTarget = metrics.scrollTop + (metrics.targetTop - metrics.viewportTop) - (metrics.topPadding ?? 16);
+  return Math.min(Math.max(0, rawTarget), maxScrollTop);
+}
+
+export function resolveLastQuestionJumpDirection(
+  scrollTop: number,
+  targetScrollTop: number | null,
+  threshold = 32,
+): "up" | "down" | null {
+  if (targetScrollTop === null || Math.abs(scrollTop - targetScrollTop) <= threshold) {
+    return null;
+  }
+  return targetScrollTop < scrollTop ? "up" : "down";
+}
+
+export function shouldShowJumpToLastQuestion(
+  scrollTop: number,
+  targetScrollTop: number | null,
+  threshold = 32,
+): boolean {
+  return resolveLastQuestionJumpDirection(scrollTop, targetScrollTop, threshold) !== null;
+}
