@@ -212,4 +212,31 @@ describe("DevTunnelManager", () => {
     await vi.waitFor(() => expect(host.manager.getInfo().status).toBe("error"));
     expect(host.manager.getInfo()).toMatchObject({ errorCode: "DEVTUNNEL_LOGIN_REQUIRED", url: "" });
   });
+
+  it("reuses an external terminal login on Retry after a prior failed interactive login", async () => {
+    const host = fixture();
+    host.user.status = "Not logged in";
+    const original = host.command.getMockImplementation()!;
+    let failLoginOnce = true;
+    host.command.mockImplementation(async (exe, args, options) => {
+      if (args[1] === "login" && failLoginOnce) {
+        failLoginOnce = false;
+        throw new DevTunnelError("DEVTUNNEL_LOGIN_REQUIRED", "Interactive Microsoft sign-in failed (exit code 1).");
+      }
+      return original(exe, args, options);
+    });
+    await host.manager.start(PORT, { access: "private" }, true);
+    await vi.waitFor(() => expect(host.manager.getInfo().errorCode).toBe("DEVTUNNEL_LOGIN_REQUIRED"));
+    await host.manager.stop();
+
+    // User subsequently signs in via `devtunnel user login --use-browser-auth` in their own shell
+    host.user.status = "Logged in";
+    host.command.mockClear();
+
+    await host.manager.start(PORT, { access: "private" }, true);
+    await vi.waitFor(() => expect(host.hosting()).toBeDefined());
+    expect(host.calls().some(args => args[1] === "login")).toBe(false);
+    host.ready();
+    expect(host.manager.getInfo()).toMatchObject({ status: "running", url: URL });
+  });
 });

@@ -71,25 +71,72 @@ const windowsLoginScript = `
 $ErrorActionPreference = 'Stop'
 $out = $env:CODEMUX_DEVTUNNEL_LOGIN_OUT
 $err = $env:CODEMUX_DEVTUNNEL_LOGIN_ERR
+function Read-LoginOutput {
+  $parts = @()
+  foreach ($p in @($out, $err)) {
+    if ($p -and (Test-Path -LiteralPath $p)) {
+      try {
+        $content = Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue
+        if ($content) { $parts += $content }
+      } catch {}
+    }
+  }
+  return ($parts -join "\`n").Trim()
+}
 $child = $null
 try {
   $child = Start-Process -FilePath $env:CODEMUX_DEVTUNNEL_CLI -ArgumentList 'user','login','--entra','--use-browser-auth' -PassThru -WindowStyle Normal -RedirectStandardOutput $out -RedirectStandardError $err
+  $handle = $null
+  try { $handle = $child.Handle } catch {}
   while (-not $child.HasExited) {
-    $text = (Get-Content -LiteralPath $out -Raw) + (Get-Content -LiteralPath $err -Raw)
+    $text = Read-LoginOutput
     if ($text -match '(?i)device.code|login.microsoft.com/device') {
-      Stop-Process -Id $child.Id -ErrorAction SilentlyContinue
-      throw 'Device code fallback is disabled.'
+      Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
+      [Console]::Error.WriteLine('Device code fallback is disabled.')
+      exit 2
     }
     Start-Sleep -Milliseconds 200
   }
-  $text = (Get-Content -LiteralPath $out -Raw) + (Get-Content -LiteralPath $err -Raw)
-  if ($text -match '(?i)device.code|login.microsoft.com/device') { throw 'Device code fallback is disabled.' }
-  if ($child.ExitCode -ne 0) { throw 'Interactive Microsoft login failed or was cancelled.' }
+  try { $child.WaitForExit() } catch {}
+  $text = Read-LoginOutput
+  if ($text -match '(?i)device.code|login.microsoft.com/device') {
+    [Console]::Error.WriteLine('Device code fallback is disabled.')
+    exit 2
+  }
+  $exitCode = $child.ExitCode
+  if ($null -ne $exitCode -and $exitCode -ne 0) {
+    if ($text) { [Console]::Error.WriteLine($text) }
+    exit $exitCode
+  }
 } finally {
-  if ($child -and -not $child.HasExited) { Stop-Process -Id $child.Id -ErrorAction SilentlyContinue }
-  Remove-Item -LiteralPath $out,$err -Force -ErrorAction SilentlyContinue
+  if ($child -and -not $child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
+  if ($out) { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue }
+  if ($err) { Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue }
 }
 `;
+
+export function sanitizeDevTunnelDiagnostic(raw: string): string {
+  if (!raw) return "";
+  const cleaned = raw
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/(x-tunnel-authorization|authorization)\s*[:=]\s*([^\r\n,;]+)/gi, "$1: [redacted]")
+    .replace(/\b(bearer|tunnel)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]")
+    .replace(/\b(token|tkn|access_token|refresh_token|client_secret|secret|password|code)\b(\s*[:=]\s*["']?)[^\s"',;&]+/gi, "$1$2[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g, "[redacted-jwt]")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, (match) => {
+      try {
+        const parsed = new URL(match);
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return "[redacted-url]";
+      }
+    })
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !/^(At line:\d+|\+\s|CategoryInfo\s*:|FullyQualifiedErrorId\s*:)/i.test(line))
+    .join(" ");
+  return cleaned.length > 280 ? `${cleaned.slice(0, 277)}...` : cleaned;
+}
 
 export interface DevTunnelCommandOptions {
   signal: AbortSignal;
@@ -155,11 +202,17 @@ export async function runDevTunnelCommand(
       child.once("close", code => {
         if (failure) reject(failure);
         else if (code === 0) resolve();
-        else reject(new DevTunnelError(
-          options.login || /unauthorized|not logged in|token.*expired|login required|authentication/i.test(output)
-            ? "DEVTUNNEL_LOGIN_REQUIRED" : "DEVTUNNEL_COMMAND_FAILED",
-          "Dev Tunnels command failed. Check your CLI login, network, and tunnel permissions.",
-        ));
+        else {
+          const detail = sanitizeDevTunnelDiagnostic(output);
+          const isAuthFailure = options.login || /unauthorized|not logged in|token.*expired|login required|authentication/i.test(output);
+          const base = options.login
+            ? `Interactive Microsoft sign-in failed (exit code ${code ?? "unknown"}).`
+            : "Dev Tunnels command failed. Check your CLI login, network, and tunnel permissions.";
+          reject(new DevTunnelError(
+            isAuthFailure ? "DEVTUNNEL_LOGIN_REQUIRED" : "DEVTUNNEL_COMMAND_FAILED",
+            detail ? `${base} ${detail}` : base,
+          ));
+        }
       });
       if (options.signal.aborted) abort();
     });

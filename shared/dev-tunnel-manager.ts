@@ -37,7 +37,7 @@ export class DevTunnelManager {
   private abort?: AbortController;
   private work?: Promise<void>;
   private onChange?: () => void;
-  private needsLogin = false;
+  private staleCachedOwner?: string;
   private readonly getPath: () => string | undefined;
   private readonly command: NonNullable<DevTunnelManagerOptions["command"]>;
 
@@ -67,7 +67,6 @@ export class DevTunnelManager {
         if (error instanceof DevTunnelError && error.code === "DEVTUNNEL_STOP_FAILED") throw error;
         return;
       }
-      if (error instanceof DevTunnelError && error.code === "DEVTUNNEL_LOGIN_REQUIRED") this.needsLogin = true;
       this.publish({
         status: "error", url: "",
         error: error instanceof Error ? error.message : "Dev Tunnels failed.",
@@ -99,16 +98,22 @@ export class DevTunnelManager {
       }
     };
     let user = await getUser();
-    if (this.needsLogin || user.status !== "Logged in" || !user.objectId) {
+    const userKey = (entry: { status?: string; provider?: string; tenantId?: string; objectId?: string }) =>
+      entry.status === "Logged in" && entry.objectId ? `${entry.provider}:${entry.tenantId}:${entry.objectId}` : undefined;
+    const initialKey = userKey(user);
+    const forceReauth = Boolean(initialKey && this.staleCachedOwner === initialKey);
+    if (forceReauth || user.status !== "Logged in" || !user.objectId) {
       if (!interactive) throw new DevTunnelError("DEVTUNNEL_LOGIN_REQUIRED", "Sign in interactively to Microsoft Dev Tunnels, then retry.");
       this.publish({ ...this.info, phase: "login" });
       await this.command(executable, ["user", "login", "--entra", "--use-browser-auth"], { signal, login: true });
       user = await getUser();
       if (user.status !== "Logged in" || !user.objectId) {
-        throw new DevTunnelError("DEVTUNNEL_LOGIN_REQUIRED", "Microsoft Dev Tunnels login was not completed.");
+        throw new DevTunnelError("DEVTUNNEL_LOGIN_REQUIRED", "Microsoft Dev Tunnels login completed, but CLI user status is still not logged in.");
       }
-      this.needsLogin = false;
+      this.staleCachedOwner = undefined;
     }
+    const activeKey = userKey(user);
+    try {
     if (config.access === "tenant" && (user.provider !== "microsoft" || !user.tenantId)) {
       throw new DevTunnelError("DEVTUNNEL_TENANT_REQUIRED", "Tenant access requires a Microsoft Entra work or school account.");
     }
@@ -192,6 +197,12 @@ export class DevTunnelManager {
         this.publish({ status: "starting", url: "", phase: "connecting" });
         await delay(1000 * 2 ** attempt, undefined, { signal });
       } finally { clearTimeout(timer); }
+    }
+    } catch (error) {
+      if (error instanceof DevTunnelError && error.code === "DEVTUNNEL_LOGIN_REQUIRED" && activeKey) {
+        this.staleCachedOwner = activeKey;
+      }
+      throw error;
     }
   }
 }

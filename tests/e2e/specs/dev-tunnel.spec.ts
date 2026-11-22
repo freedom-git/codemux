@@ -30,7 +30,7 @@ async function setup(page: Page, available = true) {
 }
 
 test.describe("Microsoft Dev Tunnels sharing", () => {
-  test("defaults to private access, supports cancellation, retries login and withdraws disabled links", async ({ page }) => {
+  test("defaults to private access, supports cancellation, retries login and withdraws disabled links", async ({ page }, testInfo) => {
     const host = await setup(page);
     await page.getByTestId("share-method-devtunnel").click();
     const dialog = page.getByRole("dialog");
@@ -42,8 +42,17 @@ test.describe("Microsoft Dev Tunnels sharing", () => {
     expect(host.updates).toEqual([{ mode: "devtunnel", devTunnelConfig: { access: "private" } }]);
     await expect(page.getByText("Waiting for Microsoft sign-in", { exact: true })).toBeVisible();
     await expect(page.getByTestId("active-share-address")).not.toBeVisible();
-    host.setState({ tunnel: { status: "error", url: "", errorCode: "DEVTUNNEL_LOGIN_REQUIRED", error: "Login required" } });
+    host.setState({
+      tunnel: {
+        status: "error",
+        url: "",
+        errorCode: "DEVTUNNEL_LOGIN_REQUIRED",
+        error: "Interactive Microsoft sign-in failed (exit code 1). User canceled authentication.",
+      },
+    });
     await expect(page.getByRole("alert").getByText(/Microsoft sign-in is required/)).toBeVisible();
+    await expect(page.getByTestId("devtunnel-error-detail")).toContainText("Interactive Microsoft sign-in failed (exit code 1). User canceled authentication.");
+    await page.getByRole("alert").screenshot({ path: testInfo.outputPath("devtunnel-error-detail.png") });
     await page.getByRole("button", { name: "Retry", exact: true }).first().click();
     expect(host.updates.at(-1)).toEqual({ mode: "devtunnel" });
     const url = "https://codemux-test-8233.jpe1.devtunnels.ms";

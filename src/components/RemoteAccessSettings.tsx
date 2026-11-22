@@ -72,6 +72,12 @@ export function RemoteAccessSettings(props: RemoteAccessSettingsProps) {
   });
   const failureDetail = () => (props.status.tunnel.errorCode && t().devTunnel.errors[props.status.tunnel.errorCode!]) || error() || (tunnelError() ? props.status.tunnel.error : "");
   const failureCode = () => tunnelError() ? props.status.tunnel.errorCode : "";
+  const failureRawReason = () => {
+    if (!tunnelError() || !props.status.tunnel.error) return "";
+    const raw = props.status.tunnel.error.trim();
+    if (!raw || raw === failureDetail()) return "";
+    return raw;
+  };
   const canRetry = () => !!failedPatch() || (isTunnel() && ["error", "stopped"].includes(props.status.tunnel.status));
 
   const refresh = async () => {
@@ -223,6 +229,9 @@ export function RemoteAccessSettings(props: RemoteAccessSettingsProps) {
         <div role="alert" class="rounded-lg border border-red-200 bg-red-50/50 px-3 py-2.5 text-xs leading-relaxed text-red-700 dark:border-red-900/60 dark:bg-red-950/15 dark:text-red-300">
           <Show when={failureCode()}><p class="mb-1 break-all font-mono">{failureCode()}</p></Show>
           <p class="break-words">{failureDetail()}</p>
+          <Show when={failureRawReason()}>
+            <p data-testid="devtunnel-error-detail" class="mt-1.5 break-words rounded bg-black/[0.04] px-2 py-1 font-mono text-[11px] opacity-90 dark:bg-white/[0.06]">{failureRawReason()}</p>
+          </Show>
           <Show when={(canRetry() || !loaded()) && !editing() && !enabled()}><button type="button" disabled={busy()} onClick={() => loaded() ? retry() : void refresh()} class={`${secondaryButton} mt-2`}>{t().connectionCenter.retry}</button></Show>
         </div>
       </Show>
@@ -315,7 +324,7 @@ export function RemoteAccessSettings(props: RemoteAccessSettingsProps) {
             </Show>
           </div>
           <Show when={validationError()}><p role="alert" class="mt-3 text-xs leading-relaxed text-red-600 dark:text-red-400">{validationError()}</p></Show>
-          <Show when={(failureDetail() || failureCode()) && (!failedPatch() || failedPatch()?.mode === provider())}><div role="alert" class="mt-3 text-xs leading-relaxed text-red-600 dark:text-red-400"><Show when={failureCode()}><p class="break-all font-mono">{failureCode()}</p></Show><p class="break-words">{failureDetail()}</p></div></Show>
+          <Show when={(failureDetail() || failureCode()) && (!failedPatch() || failedPatch()?.mode === provider())}><div role="alert" class="mt-3 text-xs leading-relaxed text-red-600 dark:text-red-400"><Show when={failureCode()}><p class="break-all font-mono">{failureCode()}</p></Show><p class="break-words">{failureDetail()}</p><Show when={failureRawReason()}><p class="mt-1.5 break-words rounded bg-black/[0.04] px-2 py-1 font-mono text-[11px] opacity-90 dark:bg-white/[0.06]">{failureRawReason()}</p></Show></div></Show>
         </ConnectionDialog>
       </Show>
     </section>

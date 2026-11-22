@@ -2,8 +2,15 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), execFile: vi.fn() }));
-vi.mock("node:child_process", () => ({ spawn: mocks.spawn, execFile: mocks.execFile }));
-import { runDevTunnelCommand } from "../../../shared/dev-tunnel-cli";
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: mocks.spawn, execFile: mocks.execFile };
+});
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runDevTunnelCommand, sanitizeDevTunnelDiagnostic } from "../../../shared/dev-tunnel-cli";
 
 class Process extends EventEmitter {
   stdout = new EventEmitter();
@@ -74,17 +81,68 @@ describe("runDevTunnelCommand", () => {
     await failed;
   });
 
-  it("redacts raw CLI failure output and times out stalled commands", async () => {
+  it("redacts raw CLI failure output while surfacing sanitized error details and times out stalled commands", async () => {
     const child = fixture();
     const running = runDevTunnelCommand("devtunnel", ["show", "codemux-test"], { signal: new AbortController().signal });
-    child.stderr.emit("data", Buffer.from("Request failed: Authorization: SECRET-TOKEN"));
+    child.stderr.emit("data", Buffer.from("Request failed (HTTP 403): Authorization: SECRET-TOKEN"));
     child.finish(1);
-    await expect(running).rejects.toThrow("Dev Tunnels command failed.");
+    let caught: Error | undefined;
+    try { await running; } catch (err) { caught = err as Error; }
+    expect(caught?.message).toContain("Dev Tunnels command failed.");
+    expect(caught?.message).toContain("Request failed (HTTP 403): Authorization: [redacted]");
+    expect(caught?.message).not.toContain("SECRET-TOKEN");
+    expect(sanitizeDevTunnelDiagnostic("tkn=my-secret https://x.devtunnels.ms/?tkn=abc AADSTS53003: Blocked"))
+      .toBe("tkn=[redacted] https://x.devtunnels.ms/ AADSTS53003: Blocked");
     vi.useFakeTimers();
     fixture();
     const stalled = runDevTunnelCommand("devtunnel", ["list"], { signal: new AbortController().signal, timeout: 100 });
     const failed = expect(stalled).rejects.toMatchObject({ code: "DEVTUNNEL_TIMEOUT" });
     await vi.advanceTimersByTimeAsync(100);
     await failed;
+  });
+
+  it.runIf(process.platform === "win32")("executes Windows PowerShell 5.1 login wrapper with accurate exit code 0 and surfaces non-zero stderr", async () => {
+    const child = fixture();
+    const pending = runDevTunnelCommand("devtunnel", ["user", "login", "--entra", "--use-browser-auth"], {
+      signal: new AbortController().signal,
+      login: true,
+    });
+    const encoded = mocks.spawn.mock.calls[0][1].at(-1) as string;
+    child.finish(0);
+    await pending;
+
+    const dir = mkdtempSync(join(tmpdir(), "devtunnel-ps51-test-"));
+    try {
+      const okCmd = join(dir, "ok.cmd");
+      writeFileSync(okCmd, "@echo Logged in as user@microsoft.com\r\n@exit /b 0\r\n");
+      const okRun = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+        env: {
+          ...process.env,
+          CODEMUX_DEVTUNNEL_CLI: okCmd,
+          CODEMUX_DEVTUNNEL_LOGIN_OUT: join(dir, "ok.out"),
+          CODEMUX_DEVTUNNEL_LOGIN_ERR: join(dir, "ok.err"),
+        },
+        windowsHide: true,
+        encoding: "utf8",
+      });
+      expect(okRun.status).toBe(0);
+
+      const failCmd = join(dir, "fail.cmd");
+      writeFileSync(failCmd, "@echo WAM broker error AADSTS500011 1>&2\r\n@exit /b 5\r\n");
+      const failRun = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+        env: {
+          ...process.env,
+          CODEMUX_DEVTUNNEL_CLI: failCmd,
+          CODEMUX_DEVTUNNEL_LOGIN_OUT: join(dir, "fail.out"),
+          CODEMUX_DEVTUNNEL_LOGIN_ERR: join(dir, "fail.err"),
+        },
+        windowsHide: true,
+        encoding: "utf8",
+      });
+      expect(failRun.status).toBe(5);
+      expect(failRun.stderr).toContain("WAM broker error AADSTS500011");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
