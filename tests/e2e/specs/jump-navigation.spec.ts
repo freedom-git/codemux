@@ -98,8 +98,12 @@ test("shows jump-to-last-question on entry, renders both jump buttons side-by-si
     await page.waitForTimeout(220);
     await page.screenshot({ path: testInfo.outputPath("mobile-at-bottom-last-question-dark.png") });
 
-    // 2a. Scroll midway up inside the last answer -> BOTH buttons appear side-by-side ("up" + "latest")!
+    // Regression check: upward scrolling from bottom to top must not trigger
+    // off-screen content-visibility height explosions or scroll jumps.
     const viewport = page.locator(".conversation-viewport");
+    const initialScrollHeight = await viewport.evaluate((el) => el.scrollHeight);
+
+    // 2a. Scroll midway up inside the last answer -> BOTH buttons appear side-by-side ("up" + "latest")!
     await viewport.evaluate((el) => { el.scrollTop = el.scrollHeight - el.clientHeight - 450; });
     await expect(jumpLastQuestion).toBeVisible();
     await expect(jumpLastQuestion).toHaveAttribute("data-direction", "up");
@@ -107,8 +111,10 @@ test("shows jump-to-last-question on entry, renders both jump buttons side-by-si
     await page.waitForTimeout(220);
     await page.screenshot({ path: testInfo.outputPath("mobile-mid-answer-both-buttons-dark.png") });
 
-    // 2b. Scroll to earlier turn (top) -> BOTH buttons appear side-by-side ("down" + "latest")!
+    // 2b. Scroll to earlier turn (top) -> BOTH buttons appear side-by-side ("down" + "latest"), with stable scrollHeight!
     await viewport.evaluate((el) => { el.scrollTop = 50; });
+    await page.waitForTimeout(100);
+    expect(await viewport.evaluate((el) => el.scrollHeight)).toBe(initialScrollHeight);
     await expect(jumpLastQuestion).toBeVisible();
     await expect(jumpLastQuestion).toHaveAttribute("data-direction", "down");
     await expect(jumpLatest).toBeVisible();
@@ -125,19 +131,33 @@ test("shows jump-to-last-question on entry, renders both jump buttons side-by-si
     expect(Math.abs(qBox.y - lBox.y)).toBeLessThan(4);
     expect(qBox.x + qBox.width).toBeLessThanOrEqual(lBox.x);
 
-    // 3. Tap "回到最后提问" -> aligns last user question cleanly at top of viewport!
-    await jumpLastQuestion.click();
+    // 3. Tap "回到最后提问" (real mobile touch tap: pointerdown -> click) -> aligns last user question cleanly and restores overflowY!
+    await jumpLastQuestion.tap();
     await expect(page.getByText("这是最后一个问题：请从头给我讲清楚整体方案")).toBeInViewport();
     await expect(jumpLastQuestion).toHaveCount(0);
     await expect(jumpLatest).toBeVisible();
-    await page.waitForTimeout(220);
+    await page.waitForTimeout(120);
+    const settledAtQuestion = await viewport.evaluate((el) => ({
+      scrollTop: el.scrollTop,
+      overflowY: el.style.overflowY,
+    }));
+    expect(settledAtQuestion.overflowY).toBe("");
+    await page.waitForTimeout(120);
+    expect(await viewport.evaluate((el) => el.scrollTop)).toBe(settledAtQuestion.scrollTop);
     await page.screenshot({ path: testInfo.outputPath("mobile-jumped-to-last-question-dark.png") });
 
-    // 4. Tap "回到最新消息" -> returns to bottom!
-    await jumpLatest.click();
+    // 4. Tap "回到最新消息" (real mobile touch tap) -> returns to bottom and stays put!
+    await jumpLatest.tap();
     await expect(page.getByText("最后一段结尾总结。")).toBeInViewport();
     await expect(jumpLatest).toHaveCount(0);
     await expect(jumpLastQuestion).toBeVisible();
+    await page.waitForTimeout(120);
+    const settledAtBottom = await viewport.evaluate((el) => ({
+      gapFromBottom: el.scrollHeight - el.scrollTop - el.clientHeight,
+      overflowY: el.style.overflowY,
+    }));
+    expect(settledAtBottom.overflowY).toBe("");
+    expect(settledAtBottom.gapFromBottom).toBeLessThanOrEqual(2);
   } finally {
     await context.close();
   }

@@ -80,3 +80,109 @@ export function shouldShowJumpToLastQuestion(
 ): boolean {
   return resolveLastQuestionJumpDirection(scrollTop, targetScrollTop, threshold) !== null;
 }
+
+export interface MomentumScrollViewport {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  readonly offsetHeight: number;
+  style: { overflowY: string };
+  scrollTo?: (options: ScrollToOptions) => void;
+}
+
+export function setViewportScrollTopInstant(viewport: MomentumScrollViewport, top: number): void {
+  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  const clamped = Math.min(Math.max(0, top), maxScrollTop);
+  if (typeof viewport.scrollTo === "function") {
+    viewport.scrollTo({ top: clamped, behavior: "instant" });
+  }
+  viewport.scrollTop = clamped;
+}
+
+/**
+ * Halts active touch/compositor momentum (inertial) scrolling when jumping
+ * programmatically from floating controls outside the scroll container.
+ *
+ * Temporarily switches `overflow-y` to `hidden` across two animation frames so
+ * WebKit (`UIScrollView` in UIProcess) and Blink (`FlingController`) tear down
+ * active deceleration velocity before `overflow-y` returns to `auto`.
+ */
+export function createMomentumJumpController() {
+  let lockedViewport: MomentumScrollViewport | null = null;
+  let rafId: number | null = null;
+  let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearTimers = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (fallbackTimer !== null) {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    }
+  };
+
+  const release = () => {
+    clearTimers();
+    if (!lockedViewport) return;
+    const viewport = lockedViewport;
+    const currentTop = viewport.scrollTop;
+    lockedViewport = null;
+    viewport.style.overflowY = "";
+    void viewport.offsetHeight;
+    setViewportScrollTopInstant(viewport, currentTop);
+  };
+
+  const jump = (
+    viewport: MomentumScrollViewport,
+    getTarget: (vp: MomentumScrollViewport) => number | null,
+    onUpdate?: () => void,
+  ) => {
+    clearTimers();
+    if (lockedViewport && lockedViewport !== viewport) {
+      release();
+    }
+    const initialTarget = getTarget(viewport);
+    if (initialTarget === null) {
+      release();
+      return;
+    }
+
+    lockedViewport = viewport;
+    viewport.style.overflowY = "hidden";
+    void viewport.offsetHeight;
+    setViewportScrollTopInstant(viewport, initialTarget);
+    onUpdate?.();
+
+    const finish = () => {
+      clearTimers();
+      if (lockedViewport !== viewport) return;
+      const fallbackTop = viewport.scrollTop;
+      lockedViewport = null;
+      viewport.style.overflowY = "";
+      void viewport.offsetHeight;
+      const finalTarget = getTarget(viewport) ?? fallbackTop;
+      setViewportScrollTopInstant(viewport, finalTarget);
+      onUpdate?.();
+    };
+
+    fallbackTimer = setTimeout(finish, 120);
+    rafId = requestAnimationFrame(() => {
+      if (lockedViewport !== viewport) return;
+      const midTarget = getTarget(viewport);
+      if (midTarget !== null) {
+        setViewportScrollTopInstant(viewport, midTarget);
+      }
+      onUpdate?.();
+      rafId = requestAnimationFrame(finish);
+    });
+  };
+
+  return {
+    jump,
+    release,
+    isLocked: () => lockedViewport !== null,
+  };
+}
+

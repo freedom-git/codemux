@@ -13,7 +13,7 @@
 //   5. Cleanup on session delete prevents memory leak
 // =============================================================================
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   saveScrollPosition,
   deleteScrollPosition,
@@ -22,6 +22,7 @@ import {
   computeLastQuestionScrollTarget,
   resolveLastQuestionJumpDirection,
   shouldShowJumpToLastQuestion,
+  createMomentumJumpController,
 } from "../../../../src/lib/scroll-position";
 
 // ---------------------------------------------------------------------------
@@ -182,4 +183,94 @@ describe("last question scroll target calculation", () => {
     expect(shouldShowJumpToLastQuestion(0, target)).toBe(false);
   });
 });
+
+describe("createMomentumJumpController", () => {
+  let frames: Map<number, FrameRequestCallback>;
+  let nextFrameId: number;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    frames = new Map();
+    nextFrameId = 0;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      frames.set(++nextFrameId, cb);
+      return nextFrameId;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      frames.delete(id);
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function flushNextFrame() {
+    const current = [...frames.values()];
+    frames.clear();
+    for (const cb of current) cb(0);
+  }
+
+  it("locks overflowY across two animation frames, rejects residual momentum drift, and restores overflowY", () => {
+    const scrollToCalls: ScrollToOptions[] = [];
+    const viewport = {
+      scrollTop: 5000,
+      scrollHeight: 8000,
+      clientHeight: 600,
+      offsetHeight: 600,
+      style: { overflowY: "" },
+      scrollTo(opts: ScrollToOptions) {
+        scrollToCalls.push(opts);
+        if (typeof opts.top === "number") this.scrollTop = opts.top;
+      },
+    };
+
+    const controller = createMomentumJumpController();
+    let updates = 0;
+    controller.jump(viewport, () => 1800, () => { updates++; });
+
+    expect(controller.isLocked()).toBe(true);
+    expect(viewport.style.overflowY).toBe("hidden");
+    expect(viewport.scrollTop).toBe(1800);
+    expect(scrollToCalls[0]).toEqual({ top: 1800, behavior: "instant" });
+    expect(updates).toBe(1);
+
+    // Simulate an in-flight pre-commit momentum IPC event nudging scrollTop
+    viewport.scrollTop = 1650;
+    flushNextFrame();
+    expect(controller.isLocked()).toBe(true);
+    expect(viewport.style.overflowY).toBe("hidden");
+    expect(viewport.scrollTop).toBe(1800);
+
+    // Second frame restores overflowY and keeps scrollTop pinned at 1800
+    viewport.scrollTop = 1720;
+    flushNextFrame();
+    expect(controller.isLocked()).toBe(false);
+    expect(viewport.style.overflowY).toBe("");
+    expect(viewport.scrollTop).toBe(1800);
+    expect(updates).toBe(3);
+  });
+
+  it("releases immediately when the user starts a fresh touch/wheel gesture", () => {
+    const viewport = {
+      scrollTop: 3200,
+      scrollHeight: 6000,
+      clientHeight: 600,
+      offsetHeight: 600,
+      style: { overflowY: "" },
+    };
+
+    const controller = createMomentumJumpController();
+    controller.jump(viewport, () => 1200);
+    expect(controller.isLocked()).toBe(true);
+    expect(viewport.style.overflowY).toBe("hidden");
+
+    controller.release();
+    expect(controller.isLocked()).toBe(false);
+    expect(viewport.style.overflowY).toBe("");
+    expect(viewport.scrollTop).toBe(1200);
+  });
+});
+
 

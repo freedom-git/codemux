@@ -81,13 +81,7 @@ export function MessageList(props: MessageListProps) {
             const isWorking = () => isLastTurn() && isLastTurnWorking();
 
             return (
-              <div
-                data-last-turn={isLastTurn() ? "" : undefined}
-                style={{
-                  "content-visibility": isLastTurn() ? "visible" : "auto",
-                  "contain-intrinsic-size": "auto 200px",
-                }}
-              >
+              <div data-last-turn={isLastTurn() ? "" : undefined}>
                 <SessionTurn
                   sessionID={props.sessionID}
                   userMessage={turn().userMessage}

@@ -98,6 +98,7 @@ import {
   resolveSessionSwitchScroll,
   computeLastQuestionScrollTarget,
   resolveLastQuestionJumpDirection,
+  createMomentumJumpController,
 } from "../lib/scroll-position";
 import { createStreamScroll, isNearScrollBottom } from "../lib/stream-scroll";
 
@@ -736,6 +737,7 @@ export default function Chat() {
   // changing scrollHeight. This retries via rAF a few times until the scroll
   // position stabilizes, avoiding a visual gap at the end.
   const [lastQuestionJumpDirection, setLastQuestionJumpDirection] = createSignal<"up" | "down" | null>(null);
+  const momentumJump = createMomentumJumpController();
   let lastQuestionScrollRafId: number | null = null;
   const cancelLastQuestionScroll = () => {
     if (lastQuestionScrollRafId !== null) {
@@ -743,7 +745,10 @@ export default function Chat() {
       lastQuestionScrollRafId = null;
     }
   };
-  onCleanup(cancelLastQuestionScroll);
+  onCleanup(() => {
+    cancelLastQuestionScroll();
+    momentumJump.release();
+  });
 
   const getLastQuestionScrollTarget = (viewport: HTMLElement): number | null => {
     const target = viewport.querySelector<HTMLElement>("[data-last-turn]");
@@ -771,11 +776,13 @@ export default function Chat() {
   };
 
   let stableScrollRafId: number | null = null;
+  let settleBottomUntil = 0;
   const scrollToBottomStable = () => {
     const el = messagesRef();
     const sessionId = sessionStore.current;
     if (!el || disposed || userScrolledUp() || manualScrollPause) return;
     if (stableScrollRafId !== null) cancelAnimationFrame(stableScrollRafId);
+    settleBottomUntil = Date.now() + 800;
     el.scrollTop = el.scrollHeight;
     updateLastQuestionJumpState();
 
@@ -825,14 +832,41 @@ export default function Chat() {
     manualScrollPause = false;
     setUserScrolledUp(false);
   };
+  const handleJumpButtonPointerDown = () => {
+    const el = messagesRef();
+    if (!el || disposed) return;
+    const frozenTop = el.scrollTop;
+    momentumJump.jump(el, () => frozenTop, () => {
+      lastScrollTop = el.scrollTop;
+      lastScrollHeight = el.scrollHeight;
+    });
+  };
   const handleJumpToLatest = () => {
     cancelLastQuestionScroll();
     resumeScrollFollowing();
+    const el = messagesRef();
+    const sessionId = sessionStore.current;
+    if (el) {
+      settleBottomUntil = Date.now() + 800;
+      momentumJump.jump(
+        el,
+        (vp) => Math.max(0, vp.scrollHeight - vp.clientHeight),
+        () => untrack(() => {
+          if (disposed || messagesRef() !== el || sessionStore.current !== sessionId) return;
+          lastScrollTop = el.scrollTop;
+          lastScrollHeight = el.scrollHeight;
+          resumeScrollFollowing();
+          if (sessionId) saveScrollPosition(sessionId, el.scrollTop);
+          updateLastQuestionJumpState();
+        }),
+      );
+    }
     scrollToBottomStable();
-    messagesRef()?.focus({ preventScroll: true });
+    el?.focus({ preventScroll: true });
   };
   const pauseScrollFollowing = () => {
     manualScrollPause = true;
+    settleBottomUntil = 0;
     const el = messagesRef();
     if (el) {
       lastScrollTop = el.scrollTop;
@@ -843,19 +877,7 @@ export default function Chat() {
     if (stableScrollRafId !== null) cancelAnimationFrame(stableScrollRafId);
     stableScrollRafId = null;
   };
-  const handleJumpToLastQuestion = () => {
-    const el = messagesRef();
-    const sessionId = sessionStore.current;
-    if (!el || disposed) return;
-    cancelLastQuestionScroll();
-    const targetScrollTop = getLastQuestionScrollTarget(el);
-    if (targetScrollTop === null) return;
-
-    streamScroll.cancel();
-    if (stableScrollRafId !== null) cancelAnimationFrame(stableScrollRafId);
-    stableScrollRafId = null;
-
-    el.scrollTop = targetScrollTop;
+  const syncScrollFollowingAfterJump = (el: HTMLElement, sessionId: string | null) => {
     lastScrollTop = el.scrollTop;
     lastScrollHeight = el.scrollHeight;
     if (sending() || !isNearBottom()) {
@@ -866,6 +888,28 @@ export default function Chat() {
     }
     if (sessionId) saveScrollPosition(sessionId, el.scrollTop);
     updateLastQuestionJumpState();
+  };
+  const handleJumpToLastQuestion = () => {
+    const el = messagesRef();
+    const sessionId = sessionStore.current;
+    if (!el || disposed) return;
+    cancelLastQuestionScroll();
+    const targetScrollTop = getLastQuestionScrollTarget(el);
+    if (targetScrollTop === null) return;
+
+    settleBottomUntil = 0;
+    streamScroll.cancel();
+    if (stableScrollRafId !== null) cancelAnimationFrame(stableScrollRafId);
+    stableScrollRafId = null;
+
+    momentumJump.jump(
+      el,
+      (vp) => getLastQuestionScrollTarget(vp as HTMLElement) ?? targetScrollTop,
+      () => untrack(() => {
+        if (disposed || messagesRef() !== el || sessionStore.current !== sessionId) return;
+        syncScrollFollowingAfterJump(el, sessionId);
+      }),
+    );
 
     let retries = 0;
     const stabilize = () => {
@@ -877,16 +921,7 @@ export default function Chat() {
         const nextTarget = getLastQuestionScrollTarget(el);
         if (nextTarget !== null && Math.abs(el.scrollTop - nextTarget) > 2) {
           el.scrollTop = nextTarget;
-          lastScrollTop = el.scrollTop;
-          lastScrollHeight = el.scrollHeight;
-          if (sending() || !isNearBottom()) {
-            manualScrollPause = true;
-            setUserScrolledUp(true);
-          } else {
-            resumeScrollFollowing();
-          }
-          if (sessionId) saveScrollPosition(sessionId, el.scrollTop);
-          updateLastQuestionJumpState();
+          syncScrollFollowingAfterJump(el, sessionId);
           stabilize();
         } else {
           updateLastQuestionJumpState();
@@ -901,9 +936,11 @@ export default function Chat() {
     const sessionId = sessionStore.current;
     untrack(() => {
       cancelLastQuestionScroll();
+      momentumJump.release();
       streamScroll.cancel();
       if (stableScrollRafId !== null) cancelAnimationFrame(stableScrollRafId);
       stableScrollRafId = null;
+      settleBottomUntil = 0;
       lastScrollTop = 0;
       lastScrollHeight = 0;
       setLastQuestionJumpDirection(null);
@@ -926,13 +963,20 @@ export default function Chat() {
   let touchY: number | undefined;
   const handleTouchStart = (event: TouchEvent) => {
     cancelLastQuestionScroll();
+    momentumJump.release();
     touchY = event.touches[0]?.clientY;
   };
   const handleTouchMove = (event: TouchEvent) => {
     const nextY = event.touches[0]?.clientY;
     if (nextY !== undefined && touchY !== undefined) {
-      if (nextY > touchY) pauseScrollFollowing();
-      else if (nextY < touchY && isNearBottom()) resumeScrollFollowing();
+      if (nextY - touchY > 2) {
+        pauseScrollFollowing();
+      } else if (touchY - nextY > 2) {
+        const el = messagesRef();
+        if (el && el.scrollHeight - el.scrollTop - el.clientHeight <= 8) {
+          resumeScrollFollowing();
+        }
+      }
     }
     touchY = nextY;
   };
@@ -953,7 +997,9 @@ export default function Chat() {
     const content = messagesContentRef();
     if (!viewport || !content) return;
     const observer = new ResizeObserver(() => {
-      scheduleScrollToBottom();
+      if (sending() || Date.now() < settleBottomUntil) {
+        scheduleScrollToBottom();
+      }
       updateLastQuestionJumpState();
     });
     observer.observe(content);
@@ -965,11 +1011,12 @@ export default function Chat() {
     // Update intent before any queued streaming frame can run.
     const sid = sessionStore.current;
     const el = messagesRef();
-    if (!el) return;
+    if (!el || momentumJump.isLocked()) return;
     // Small upward gestures must stay detached even inside the bottom tolerance.
     // A shorter document can clamp scrollTop without any user navigation.
     const movedUp = el.scrollTop < lastScrollTop && el.scrollHeight >= lastScrollHeight;
-    if (manualScrollPause && el.scrollTop > lastScrollTop && el.scrollHeight - el.scrollTop - el.clientHeight <= 1) {
+    if (movedUp) settleBottomUntil = 0;
+    if (manualScrollPause && el.scrollTop > lastScrollTop && el.scrollHeight - el.scrollTop - el.clientHeight <= 4) {
       manualScrollPause = false;
     }
     setUserScrolledUp(manualScrollPause || movedUp || (userScrolledUp() && !isNearBottom()));
@@ -1459,8 +1506,14 @@ export default function Chat() {
             const el = messagesRef();
             if (el) {
               el.scrollTop = pos;
+              lastScrollTop = el.scrollTop;
+              lastScrollHeight = el.scrollHeight;
               if (isNearBottom()) resumeScrollFollowing();
-              else setUserScrolledUp(true);
+              else {
+                manualScrollPause = true;
+                setUserScrolledUp(true);
+              }
+              updateLastQuestionJumpState();
             }
           }, 50);
         }
@@ -1672,8 +1725,14 @@ export default function Chat() {
           const el = messagesRef();
           if (el) {
             el.scrollTop = pos;
+            lastScrollTop = el.scrollTop;
+            lastScrollHeight = el.scrollHeight;
             if (isNearBottom()) resumeScrollFollowing();
-            else setUserScrolledUp(true);
+            else {
+              manualScrollPause = true;
+              setUserScrolledUp(true);
+            }
+            updateLastQuestionJumpState();
           }
         }, 100);
       } else {
@@ -3028,7 +3087,7 @@ export default function Chat() {
   });
 
   return (
-    <div class="flex flex-col h-screen bg-[var(--cm-canvas)] font-sans text-gray-900 dark:text-gray-100 overflow-hidden relative">
+    <div class="flex flex-col h-screen h-[100dvh] bg-[var(--cm-canvas)] font-sans text-gray-900 dark:text-gray-100 overflow-hidden relative">
 
       {/* Unified Titlebar — 40px, spans full width */}
       <div
@@ -3385,7 +3444,7 @@ export default function Chat() {
             {/* Scroll container is ALWAYS in the DOM so the virtualizer
                 maintains a stable reference to getScrollElement(). The loading
                 overlay is rendered on top without destroying the scroll div. */}
-              <div ref={setMessagesRef} onScroll={handleScroll} onWheel={(event) => { cancelLastQuestionScroll(); if (event.deltaY < 0) pauseScrollFollowing(); else if (event.deltaY > 0 && isNearBottom()) resumeScrollFollowing(); }} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onKeyDown={handleScrollKeyDown} class="conversation-viewport" tabIndex={0} role="region" aria-label={t().chat.conversationRegion} style={{ position: "relative" }}>
+              <div ref={setMessagesRef} onScroll={handleScroll} onWheel={(event) => { cancelLastQuestionScroll(); momentumJump.release(); if (event.deltaY < 0) pauseScrollFollowing(); else if (event.deltaY > 0 && isNearBottom()) resumeScrollFollowing(); }} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onKeyDown={handleScrollKeyDown} class="conversation-viewport" tabIndex={0} role="region" aria-label={t().chat.conversationRegion} style={{ position: "relative" }}>
                 {/* Loading overlay — covers scroll area during message load */}
                 <Show when={loadingMessages()}>
                   <div class="absolute inset-0 flex items-center justify-center z-10 bg-[var(--cm-surface)]/80">
@@ -3479,6 +3538,7 @@ export default function Chat() {
                           data-jump="last-question"
                           data-direction={direction()}
                           class="conversation-jump"
+                          onPointerDown={handleJumpButtonPointerDown}
                           onClick={handleJumpToLastQuestion}
                         >
                           <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
@@ -3489,7 +3549,13 @@ export default function Chat() {
                       )}
                     </Show>
                     <Show when={userScrolledUp()}>
-                      <button type="button" data-jump="latest" class="conversation-jump" onClick={handleJumpToLatest}>
+                      <button
+                        type="button"
+                        data-jump="latest"
+                        class="conversation-jump"
+                        onPointerDown={handleJumpButtonPointerDown}
+                        onClick={handleJumpToLatest}
+                      >
                         <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16m-6-6 6 6 6-6" /></svg>
                         <span>{t().chat.jumpToLatest}</span>
                       </button>
