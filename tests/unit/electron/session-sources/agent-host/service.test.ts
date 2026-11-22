@@ -59,6 +59,42 @@ describe("AgentHostConnection", () => {
     await expect(client.dispatch(server.chatUri, { type: "chat/turnCancelled", turnId: "race", duration: 0 })).rejects.toThrow("rejected");
     expect(client.chats.get(server.chatUri)?.activeTurn?.id).toBe("race");
   });
+
+  it("accepts large chat snapshots over 32 MiB up to the 100 MiB payload limit", async () => {
+    const server = await createAgentHostFixture();
+    cleanup.push(() => server.close());
+    const largeImageData = "A".repeat(40 * 1024 * 1024);
+    server.chat.turns.push({
+      id: "large-turn",
+      state: "complete",
+      startedAt: "2026-11-19T00:00:00Z",
+      duration: 100,
+      message: { text: "inspect screenshots", origin: { kind: "user" } },
+      responseParts: [{
+        kind: "toolCall",
+        toolCall: {
+          toolCallId: "view-1",
+          toolName: "view",
+          displayName: "view",
+          invocationMessage: "Viewing screenshot",
+          pastTenseMessage: "Viewed screenshot",
+          status: "completed",
+          success: true,
+          confirmed: "not-needed",
+          content: [
+            { type: "text", text: "Viewed image file" },
+            { type: "embeddedResource", contentType: "image/png", data: largeImageData },
+          ],
+        },
+      }],
+    });
+    const client = new AgentHostConnection(server.endpoint, { onChange() {}, onCatalogChange() {}, onClose() {} });
+    cleanup.push(() => client.close());
+    await client.connect();
+    await client.subscribe(server.chatUri);
+    expect(client.chats.get(server.chatUri)?.turns).toHaveLength(1);
+    expect(client.chats.get(server.chatUri)?.turns[0].id).toBe("large-turn");
+  });
 });
 
 describe("AgentHostService", () => {

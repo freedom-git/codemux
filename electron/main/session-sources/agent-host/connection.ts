@@ -86,7 +86,7 @@ export class AgentHostConnection {
         if (options.all) callback(null, local);
         else callback(null, local[0].address, local[0].family);
       }),
-      handshakeTimeout: 8000, maxPayload: 32 * 1024 * 1024, perMessageDeflate: false,
+      handshakeTimeout: 8000, maxPayload: 100 * 1024 * 1024, perMessageDeflate: false,
     });
     const transport = new LocalTransport(socket);
     try {
