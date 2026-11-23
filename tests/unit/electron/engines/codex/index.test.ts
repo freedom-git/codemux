@@ -429,7 +429,7 @@ describe("CodexAdapter", () => {
       engineMeta: { codexThreadId: "thread-123" },
     });
     expect((adapter as any).sessionModels.get("codex_thread-123")).toBe("gpt-5.4");
-    expect(adapter.getReasoningEffort("codex_thread-123")).toBe("max");
+    expect(adapter.getReasoningEffort("codex_thread-123")).toBe("xhigh");
   });
 
   it("falls back to starting a new thread when resume fails", async () => {
@@ -536,8 +536,8 @@ describe("CodexAdapter", () => {
         capabilities: expect.objectContaining({
           attachment: true,
           reasoning: true,
-          supportedReasoningEfforts: ["high", "max"],
-          defaultReasoningEffort: "max",
+          supportedReasoningEfforts: ["high", "xhigh"],
+          defaultReasoningEffort: "xhigh",
         }),
       }),
     ]);
@@ -608,7 +608,7 @@ describe("CodexAdapter", () => {
           excludeSlashTmp: false,
         },
         model: "gpt-5.4",
-        effort: "xhigh",
+        effort: "max",
         collaborationMode: expect.objectContaining({
           mode: "default",
         }),

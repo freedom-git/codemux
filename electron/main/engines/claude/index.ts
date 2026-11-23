@@ -186,13 +186,15 @@ function getDefaultClaudeReasoningEffort(
     : supportedReasoningEfforts[0];
 }
 
+const CLAUDE_REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"] as const;
+
 export function getClaudeReasoningCapabilities(
   model: Pick<ClaudeModelInfo, "supportsEffort" | "supportedEffortLevels">,
 ): NonNullable<UnifiedModelInfo["capabilities"]> {
   const reasoning = model.supportsEffort === true;
   const supportedReasoningEfforts = reasoning
     ? normalizeReasoningEfforts(model.supportedEffortLevels?.filter((effort) =>
-        (REASONING_EFFORT_VALUES as readonly string[]).includes(effort),
+        (CLAUDE_REASONING_EFFORT_VALUES as readonly string[]).includes(effort),
       )) ?? [...REASONING_EFFORT_VALUES]
     : undefined;
 
@@ -632,6 +634,7 @@ export class ClaudeCodeAdapter extends EngineAdapter {
       messageEnqueue: true,
       slashCommands: true,
       availableModes: this.getModes(),
+      reasoningEffortOptions: [...CLAUDE_REASONING_EFFORT_VALUES],
     };
   }
 
@@ -1245,19 +1248,43 @@ export class ClaudeCodeAdapter extends EngineAdapter {
 
       const models = data.data
         .filter((m) => typeof m.id === "string")
-        .map((m) => ({
-          modelId: m.id,
-          name: m.display_name || m.id,
-          description: "",
-          engineType: "claude" as EngineType,
-          // HTTP /v1/models doesn't return reasoning capabilities, so assume
-          // all Claude models support the standard effort levels.
-          capabilities: {
-            reasoning: true,
-            supportedReasoningEfforts: [...REASONING_EFFORT_VALUES],
-            defaultReasoningEffort: "medium" as const,
-          },
-        }))
+        .map((m) => {
+          const rawCaps = (m as { capabilities?: { effort?: Record<string, unknown>; image_input?: { supported?: boolean } } }).capabilities;
+          const rawEffort = rawCaps?.effort;
+          let capabilities: NonNullable<UnifiedModelInfo["capabilities"]>;
+          if (rawEffort && typeof rawEffort === "object") {
+            const supported = rawEffort.supported === true;
+            const parsedLevels = supported
+              ? CLAUDE_REASONING_EFFORT_VALUES.filter((level) => {
+                  const entry = rawEffort[level] as { supported?: boolean } | undefined;
+                  return entry?.supported === true;
+                })
+              : [];
+            const supportedReasoningEfforts = supported
+              ? (parsedLevels.length > 0 ? parsedLevels : [...REASONING_EFFORT_VALUES])
+              : undefined;
+            capabilities = {
+              ...(typeof rawCaps?.image_input?.supported === "boolean" ? { attachment: rawCaps.image_input.supported } : {}),
+              reasoning: supported,
+              supportedReasoningEfforts,
+              defaultReasoningEffort: getDefaultClaudeReasoningEffort(supportedReasoningEfforts),
+            };
+          } else {
+            // Standard HTTP /v1/models omits capability flags; fall back to standard levels.
+            capabilities = {
+              reasoning: true,
+              supportedReasoningEfforts: [...REASONING_EFFORT_VALUES],
+              defaultReasoningEffort: "medium" as const,
+            };
+          }
+          return {
+            modelId: m.id,
+            name: m.display_name || m.id,
+            description: "",
+            engineType: "claude" as EngineType,
+            capabilities,
+          };
+        })
         .sort((a, b) => a.modelId.localeCompare(b.modelId));
 
       if (models.length > 0) {
@@ -2234,7 +2261,7 @@ export class ClaudeCodeAdapter extends EngineAdapter {
 
     // Apply reasoning effort level if set for this session
     const reasoningEffort = this.sessionReasoningEfforts.get(sessionId);
-    if (reasoningEffort && reasoningEffort !== "ultra") {
+    if (reasoningEffort && reasoningEffort !== "ultra" && reasoningEffort !== "none") {
       sdkOptions.effort = reasoningEffort as Options["effort"];
     }
 

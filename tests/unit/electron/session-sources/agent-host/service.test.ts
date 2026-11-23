@@ -243,18 +243,41 @@ describe("AgentHostService", () => {
     expect(server.requests.some(request => request.method === "createSession")).toBe(false);
   });
 
-  it("preserves native model configuration and maps extra-high and maximum effort separately", async () => {
+  it("preserves native model configuration and maps extra-high, maximum effort, and contextSize options", async () => {
     const { server, adapter, id } = await setup(server => {
-      server.models.push({ id: "reasoning-model", provider: "copilotcli", name: "Reasoning", configSchema: {
-        type: "object", properties: { thinkingLevel: { type: "string", enum: ["low", "xhigh", "max"] } },
-      } });
+      server.models.push({
+        id: "reasoning-model",
+        provider: "copilotcli",
+        name: "Reasoning",
+        configSchema: {
+          type: "object",
+          properties: {
+            thinkingLevel: { type: "string", default: "medium", enum: ["low", "medium", "xhigh", "max"] },
+            contextSize: {
+              type: "number",
+              default: 272000,
+              enum: [272000, 922000],
+              enumLabels: ["272K", "1M"],
+              enumDescriptions: ["Default", "Longer sessions"],
+            } as never,
+          },
+        },
+      });
       server.broadcast(server.chatUri, { type: "chat/draftChanged", draft: {
-        text: "native draft", origin: { kind: "user" }, model: { id: "reasoning-model", config: { contextSize: 922000, thinkingLevel: "xhigh" } },
+        text: "native draft", origin: { kind: "user" }, model: { id: "reasoning-model", config: { contextSize: 272000, thinkingLevel: "xhigh" } },
       } });
     });
-    await adapter.restoreSession(id);
-    expect(adapter.getReasoningEffort(id)).toBe("max");
-    await adapter.setReasoningEffort(id, "ultra");
+    const session = await adapter.restoreSession(id);
+    const modelInfo = session.connection?.models.find(m => m.modelId === "reasoning-model");
+    expect(modelInfo?.capabilities?.supportedReasoningEfforts).toEqual(["low", "medium", "xhigh", "max"]);
+    expect(modelInfo?.capabilities?.contextWindowOptions).toEqual([
+      { id: "272000", label: "272K", tokens: 272000, description: "Default" },
+      { id: "922000", label: "1M", tokens: 922000, description: "Longer sessions" },
+    ]);
+    expect(adapter.getReasoningEffort(id)).toBe("xhigh");
+    expect(adapter.getContextWindow(id)).toBe("272000");
+    await adapter.setReasoningEffort(id, "max");
+    await adapter.setContextWindow(id, "922000");
     expect(server.chat.draft?.model?.config).toEqual({ contextSize: 922000, thinkingLevel: "max" });
     await adapter.setModel(id, "reasoning-model");
     expect(server.chat.draft?.text).toBe("native draft");

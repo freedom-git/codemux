@@ -7,9 +7,11 @@ import type {
 } from "@microsoft/agent-host-protocol";
 import type { SendMessageOptions, SessionBackendEvents } from "../../../../shared/session-backend";
 import type { SessionSource } from "../session-source";
-import type {
-  EngineType, EngineCapabilities, EngineCatalogSnapshot, SessionSourceState, MessagePromptContent,
-  PermissionReply, ReasoningEffort, UnifiedMessage, UnifiedSession, UnifiedModelInfo,
+import {
+  formatContextWindowTokens,
+  type ContextWindowOption,
+  type EngineType, type EngineCapabilities, type EngineCatalogSnapshot, type SessionSourceState, type MessagePromptContent,
+  type PermissionReply, type ReasoningEffort, type UnifiedMessage, type UnifiedSession, type UnifiedModelInfo,
 } from "../../../../src/types/unified";
 import { agentHostEndpointKey, discoverAgentHosts, type AgentHostEndpoint } from "./discovery";
 import { AgentHostConnection, ROOT } from "./connection";
@@ -18,8 +20,18 @@ import { SESSION_FLAGS, type Wire } from "./wire";
 import { engineProvider, providerEngine, supportedEngines, agentHostCatalogId } from "./providers";
 
 function unifiedEffort(value: unknown): ReasoningEffort | undefined {
-  return value === "xhigh" ? "max" : value === "max" ? "ultra"
-    : value === "low" || value === "medium" || value === "high" ? value : undefined;
+  if (value === "balance") return "medium";
+  if (value === "hydrafusion") return "high";
+  if (value === "hydrafusion-max") return "max";
+  return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
+    ? value
+    : undefined;
+}
+function nativeTierEffort(effort: ReasoningEffort): string {
+  if (effort === "medium") return "balance";
+  if (effort === "high") return "hydrafusion";
+  if (effort === "max") return "hydrafusion-max";
+  return effort;
 }
 function isExternalCliSession(session: SessionState): boolean {
   const meta = session._meta as Record<string, unknown> | undefined;
@@ -89,7 +101,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       dynamicModes: true, messageCancellation: true, permissionAlways: false, imageAttachment: true,
       loadSession: true, listSessions: true, modelSwitchable: true, customModelInput: false,
       messageEnqueue: true, slashCommands: false, availableModes: [],
-      reasoningEffortOptions: ["low", "medium", "high", "max", "ultra"] };
+      reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max"] };
   }
   getSessionCapabilities(id: string): EngineCapabilities {
     return this.entries.get(id)?.session.connection?.capabilities ?? this.getCapabilities();
@@ -304,13 +316,19 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     const mode = typeof values.mode === "string" ? values.mode : undefined;
     const updated = Date.parse(chat.modifiedAt) || entry.session.time?.updated || Date.now();
     const last = "turns" in chat ? chat.activeTurn?.message.model ?? chat.turns.at(-1)?.message.model : undefined;
-    const effort = (model ?? last)?.config?.thinkingLevel ?? (model ?? last)?.config?.reasoningEffort;
+    const activeConfig = (model ?? last)?.config;
+    const effort = activeConfig?.thinkingLevel ?? activeConfig?.reasoningEffort ?? activeConfig?.tier;
+    const rawContextSize = activeConfig?.contextSize;
     const modeSchema = ("config" in chat ? chat.config?.schema : undefined)?.properties?.mode ?? session.config?.schema?.properties?.mode;
     const models = entry.host ? this.hostModels(entry.host, entry.provider) : entry.session.connection?.models ?? [];
     const modes = modeSchema?.enum?.filter((value): value is string => typeof value === "string")
       .map(id => ({ id, label: id })) ?? [];
+    const resolvedModelId = (model ?? last)?.id ?? entry.session.modelId;
     const selectedModel = entry.host?.root?.agents.find(agent => agent.provider === entry.provider)?.models
-      .find(candidate => candidate.id === (model ?? last)?.id);
+      .find(candidate => candidate.id === resolvedModelId);
+    const modelEfforts = resolvedModelId
+      ? models.find(candidate => candidate.modelId === resolvedModelId)?.capabilities?.supportedReasoningEfforts
+      : undefined;
     return { id, engineType: providerEngine(entry.provider)!, title: chat.resource === session.defaultChat ? session.title : chat.title,
       directory, projectId: scopedId(entry.source, directory), time: { created: entry.session.time?.created ?? updated, updated },
       connection: { ...this.connection(entry.host, (chat.interactivity === undefined || chat.interactivity === "full")
@@ -319,11 +337,12 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
         capabilities: { ...this.getCapabilities(), availableModes: modes,
           dynamicModes: !!(modeSchema?.chatMutable || modeSchema?.sessionMutable),
           modelSwitchable: models.length > 0, imageAttachment: selectedModel?.supportsVision === true,
-          reasoningEffortOptions: models.find(candidate => candidate.modelId === (model ?? last)?.id)?.capabilities?.supportedReasoningEfforts ?? [],
+          reasoningEffortOptions: modelEfforts?.length ? modelEfforts : ["none", "low", "medium", "high", "xhigh", "max"],
         },
       },
-      activityStatus: activity(chat.status), mode, modelId: (model ?? last)?.id ?? entry.session.modelId,
+      activityStatus: activity(chat.status), mode, modelId: resolvedModelId,
       reasoningEffort: unifiedEffort(effort),
+      contextWindow: rawContextSize !== undefined && rawContextSize !== null ? String(rawContextSize) : undefined,
       engineMeta: { ahpSource: entry.source, ahpSession: entry.sessionUri, ahpChat: entry.chatUri, ahpProvider: entry.provider },
     };
   }
@@ -547,7 +566,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     if (options?.mode && options.mode !== entry.session.mode) await this.setMode(id, options.mode);
     const modelId = options?.modelId ?? chat.draft?.model?.id ?? entry.session.modelId;
     const previous = chat.draft?.model ?? chat.activeTurn?.message.model ?? chat.turns.at(-1)?.message.model;
-    const model = modelId ? this.model(host, entry.provider, modelId, options?.reasoningEffort, previous) : undefined;
+    const model = modelId ? this.model(host, entry.provider, modelId, options?.reasoningEffort, previous, options?.contextWindow) : undefined;
     const images = content.filter(part => part.type === "image");
     if (images.some(image => !image.data || !image.mimeType || !/^image\/(png|jpeg|gif|webp)$/.test(image.mimeType))) throw new Error("Invalid image attachment.");
     if (images.length && !host.root?.agents.find(agent => agent.provider === entry.provider)?.models
@@ -586,25 +605,91 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   }
   private hostModels(host: AgentHostConnection, provider: string): UnifiedModelInfo[] {
     return (host.root?.agents.find(agent => agent.provider === provider)?.models ?? []).filter(model => model.provider === provider).map(model => {
-      const property = model.configSchema?.properties?.thinkingLevel ?? model.configSchema?.properties?.reasoningEffort;
-      const efforts = (property?.enum ?? []).map(unifiedEffort).filter((value): value is ReasoningEffort => value !== undefined);
-      return { modelId: model.id, name: model.name, engineType: providerEngine(provider)!,
-        capabilities: { reasoning: efforts.length > 0, supportedReasoningEfforts: efforts, defaultReasoningEffort: unifiedEffort(property?.default) } };
+      const props = model.configSchema?.properties;
+      const effortKey = props?.thinkingLevel ? "thinkingLevel" : props?.reasoningEffort ? "reasoningEffort" : props?.tier ? "tier" : undefined;
+      const property = effortKey ? props?.[effortKey] : undefined;
+      const rawEnum = property?.enum ?? [];
+      const rawLabels = (property as { enumLabels?: string[] } | undefined)?.enumLabels;
+      const efforts: ReasoningEffort[] = [];
+      const reasoningEffortLabels: Partial<Record<ReasoningEffort, string>> = {};
+      rawEnum.forEach((rawVal, idx) => {
+        const mapped = unifiedEffort(rawVal);
+        if (!mapped || efforts.includes(mapped)) return;
+        efforts.push(mapped);
+        if (effortKey === "tier" && rawLabels?.[idx]) {
+          reasoningEffortLabels[mapped] = rawLabels[idx];
+        }
+      });
+
+      const contextProp = props?.contextSize;
+      const contextEnum = Array.isArray(contextProp?.enum) ? contextProp.enum : undefined;
+      const contextLabels = (contextProp as { enumLabels?: string[] } | undefined)?.enumLabels;
+      const contextDescriptions = (contextProp as { enumDescriptions?: string[] } | undefined)?.enumDescriptions;
+      const contextWindowOptions: ContextWindowOption[] | undefined = contextEnum && contextEnum.length > 1
+        ? contextEnum.map((val, idx) => {
+          const num = typeof val === "number" ? val : Number(val);
+          const label = contextLabels?.[idx] || (Number.isFinite(num) ? formatContextWindowTokens(num) : String(val));
+          const description = contextDescriptions?.[idx];
+          return {
+            id: String(val),
+            label,
+            ...(Number.isFinite(num) ? { tokens: num } : {}),
+            ...(description ? { description } : {}),
+          };
+        })
+        : undefined;
+      const defaultContextWindow = contextWindowOptions
+        ? (contextProp?.default !== undefined ? String(contextProp.default) : contextWindowOptions[0]?.id)
+        : undefined;
+
+      return {
+        modelId: model.id,
+        name: model.name,
+        engineType: providerEngine(provider)!,
+        capabilities: {
+          attachment: model.supportsVision === true,
+          reasoning: efforts.length > 0,
+          supportedReasoningEfforts: efforts,
+          defaultReasoningEffort: unifiedEffort(property?.default),
+          ...(Object.keys(reasoningEffortLabels).length > 0 ? { reasoningEffortLabels } : {}),
+          ...(contextWindowOptions ? { contextWindowOptions, defaultContextWindow } : {}),
+        },
+      };
     });
   }
-  private model(host: AgentHostConnection, provider: string, id: string, effort?: ReasoningEffort | null, previous?: ModelSelection): ModelSelection {
+  private model(
+    host: AgentHostConnection,
+    provider: string,
+    id: string,
+    effort?: ReasoningEffort | null,
+    previous?: ModelSelection,
+    contextWindow?: string | null,
+  ): ModelSelection {
     const model = host.root?.agents.find(agent => agent.provider === provider)?.models?.find(model => model.id === id && model.provider === provider);
     if (!model) throw new Error("This model is not available in the connected VS Code Host.");
     const config = { ...(previous?.id === id ? previous.config : {}) };
     if (effort !== undefined) {
       delete config.thinkingLevel;
       delete config.reasoningEffort;
+      delete config.tier;
       if (effort) {
-        const key = model.configSchema?.properties?.thinkingLevel ? "thinkingLevel" : "reasoningEffort";
-        const property = model.configSchema?.properties?.[key];
-        const value = effort === "max" ? "xhigh" : effort === "ultra" ? "max" : effort;
+        const props = model.configSchema?.properties;
+        const key = props?.thinkingLevel ? "thinkingLevel" : props?.reasoningEffort ? "reasoningEffort" : props?.tier ? "tier" : "thinkingLevel";
+        const property = props?.[key];
+        const value = key === "tier" ? nativeTierEffort(effort) : effort;
         if (!property || (property.enum && !property.enum.includes(value))) throw new Error("This reasoning effort is not supported by the VS Code model.");
         config[key] = value;
+      }
+    }
+    if (contextWindow !== undefined) {
+      delete config.contextSize;
+      if (contextWindow !== null) {
+        const contextProp = model.configSchema?.properties?.contextSize;
+        const coerced = contextProp?.type === "number" ? Number(contextWindow) : contextWindow;
+        if (!contextProp || (contextProp.enum && !contextProp.enum.includes(coerced))) {
+          throw new Error("This context window size is not supported by the VS Code model.");
+        }
+        config.contextSize = coerced;
       }
     }
     return { id, ...(Object.keys(config).length ? { config } : {}) };
@@ -636,6 +721,16 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     this.publishChat(entry);
   }
   getReasoningEffort(id: string) { return this.entries.get(id)?.session.reasoningEffort ?? null; }
+  async setContextWindow(id: string, contextWindow: string | null) {
+    const { entry, host, chat } = await this.attach(id, true);
+    const modelId = chat.draft?.model?.id ?? entry.session.modelId;
+    if (!modelId) { if (contextWindow) throw new Error("Choose a model before changing context window."); return; }
+    const model = this.model(host, entry.provider, modelId, undefined, chat.draft?.model ?? chat.activeTurn?.message.model ?? chat.turns.at(-1)?.message.model, contextWindow);
+    await host.dispatch(entry.chatUri, { type: "chat/draftChanged",
+      draft: { ...chat.draft, text: chat.draft?.text ?? "", origin: { kind: "user" }, model } });
+    this.publishChat(entry);
+  }
+  getContextWindow(id: string) { return this.entries.get(id)?.session.contextWindow ?? null; }
   getPendingPermissions(id?: string) { return [...this.permissions.values()].filter(route => !id || route.permission.sessionId === id).map(route => route.permission); }
   getPendingQuestions(id?: string) { return [...this.questions.values()].filter(route => !id || route.question.sessionId === id).map(route => route.question); }
   async replyPermission(permissionId: string, reply: PermissionReply, sessionId?: string) {

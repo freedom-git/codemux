@@ -161,17 +161,48 @@ export interface UnifiedModelInfo {
     toolcall?: boolean;
     supportedReasoningEfforts?: ReasoningEffort[];
     defaultReasoningEffort?: ReasoningEffort;
+    reasoningEffortLabels?: Partial<Record<ReasoningEffort, string>>;
+    contextWindowOptions?: ContextWindowOption[];
+    defaultContextWindow?: string;
   };
 }
 
+/** Selectable context-window option derived from model metadata */
+export interface ContextWindowOption {
+  id: string;
+  label: string;
+  tokens?: number;
+  description?: string;
+}
+
+/**
+ * Format a context-window token count into a compact human label matching
+ * VS Code / Copilot conventions (e.g. 272000 -> "272K", 922000/1050000 -> "1M",
+ * 872000 -> "872K", 500000 -> "500K", 200000 -> "200K").
+ */
+export function formatContextWindowTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "";
+  if (tokens >= 900_000) {
+    const millions = Math.round(tokens / 1_000_000);
+    return `${Math.max(1, millions)}M`;
+  }
+  if (tokens >= 1_000) {
+    return `${Math.round(tokens / 1_000)}K`;
+  }
+  return String(Math.round(tokens));
+}
+
 /** Unified reasoning effort level across engines */
-export type ReasoningEffort = "low" | "medium" | "high" | "max" | "ultra";
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Standard fallback levels for engines without model-specific effort metadata. */
 export const REASONING_EFFORT_VALUES = ["low", "medium", "high", "max"] as const;
 
+/** Complete set of recognized reasoning effort identifiers across all engines. */
+export const ALL_REASONING_EFFORT_VALUES = ["none", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return value === "ultra" || (typeof value === "string" && (REASONING_EFFORT_VALUES as readonly string[]).includes(value));
+  return typeof value === "string" && (ALL_REASONING_EFFORT_VALUES as readonly string[]).includes(value);
 }
 
 export function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
@@ -197,6 +228,7 @@ export interface UnifiedSessionConfig {
   mode?: string;
   modelId?: string;
   reasoningEffort?: ReasoningEffort;
+  contextWindow?: string;
   serviceTier?: CodexServiceTier;
 }
 
@@ -1068,6 +1100,7 @@ export interface MessageSendRequest {
   mode?: string;
   modelId?: string;
   reasoningEffort?: ReasoningEffort | null;
+  contextWindow?: string | null;
   serviceTier?: CodexServiceTier | null;
 }
 
@@ -1224,6 +1257,7 @@ export interface CommandInvokeRequest {
   mode?: string;
   modelId?: string;
   reasoningEffort?: ReasoningEffort | null;
+  contextWindow?: string | null;
   serviceTier?: CodexServiceTier | null;
 }
 

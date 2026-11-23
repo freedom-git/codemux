@@ -506,14 +506,44 @@ export default function Chat() {
     ? currentSessionInfo()?.modelId ?? null
     : getSelectedModelForSession(currentEngineType(), currentSessionInfo()?.modelId));
 
-  const currentSessionReasoningEffort = createMemo(() => currentSessionInfo()?.connection?.authoritative
-    ? currentSessionInfo()?.reasoningEffort ?? null
-    : getEffectiveReasoningEffortForSession(
+  const currentSelectedModel = createMemo(() => {
+    const modelId = currentSessionModelId();
+    return modelId ? currentSessionModels().find((m) => m.modelId === modelId) : undefined;
+  });
+
+  const currentSupportedEfforts = createMemo(() =>
+    currentSelectedModel()?.capabilities?.supportedReasoningEfforts ?? [],
+  );
+
+  const currentReasoningEffortLabels = createMemo(() =>
+    currentSelectedModel()?.capabilities?.reasoningEffortLabels,
+  );
+
+  const currentSessionReasoningEffort = createMemo(() => {
+    if (currentSessionInfo()?.connection?.authoritative) {
+      const raw = currentSessionInfo()?.reasoningEffort;
+      const supported = currentSupportedEfforts();
+      if (raw && (!supported.length || supported.includes(raw))) return raw;
+      return currentSelectedModel()?.capabilities?.defaultReasoningEffort ?? null;
+    }
+    return getEffectiveReasoningEffortForSession(
       currentEngineType(),
       currentSessionInfo()?.modelId,
       currentSessionInfo()?.reasoningEffort ?? null,
-    ),
+    );
+  });
+
+  const currentContextWindowOptions = createMemo(() =>
+    currentSelectedModel()?.capabilities?.contextWindowOptions ?? [],
   );
+
+  const currentSessionContextWindow = createMemo(() => {
+    const options = currentContextWindowOptions();
+    if (options.length <= 1) return null;
+    const raw = currentSessionInfo()?.contextWindow;
+    if (raw && options.some((option) => option.id === raw)) return raw;
+    return currentSelectedModel()?.capabilities?.defaultContextWindow ?? options[0]?.id ?? null;
+  });
 
   const currentSessionServiceTier = createMemo(() =>
     getServiceTierForSession(
@@ -521,12 +551,6 @@ export default function Chat() {
       currentSessionInfo()?.serviceTier ?? null,
     ),
   );
-
-  const currentSupportedEfforts = createMemo(() => {
-    const modelId = currentSessionModelId();
-    const model = modelId ? currentSessionModels().find((m) => m.modelId === modelId) : undefined;
-    return model?.capabilities?.supportedReasoningEfforts ?? [];
-  });
 
   const currentFastModeSupported = createMemo(() =>
     currentCapabilities()?.fastModeSupported === true,
@@ -577,11 +601,27 @@ export default function Chat() {
     return handleSessionConfigChange({ mode: agent.id });
   };
 
-  const handleSessionModelChange = (modelId: string) =>
-    handleSessionConfigChange({ modelId });
+  const handleSessionModelChange = (modelId: string) => {
+    const nextModel = currentSessionModels().find((m) => m.modelId === modelId);
+    const patch: import("../types/unified").SessionConfigPatch = { modelId };
+    const existingEffort = currentSessionInfo()?.reasoningEffort;
+    const nextEfforts = nextModel?.capabilities?.supportedReasoningEfforts;
+    if (existingEffort && nextModel && (!nextEfforts?.length || !nextEfforts.includes(existingEffort))) {
+      patch.reasoningEffort = null;
+    }
+    const existingContext = currentSessionInfo()?.contextWindow;
+    const nextContexts = nextModel?.capabilities?.contextWindowOptions;
+    if (existingContext && nextModel && (!nextContexts?.length || !nextContexts.some((o) => o.id === existingContext))) {
+      patch.contextWindow = null;
+    }
+    return handleSessionConfigChange(patch);
+  };
 
   const handleSessionReasoningEffortChange = (effort: ReasoningEffort) =>
     handleSessionConfigChange({ reasoningEffort: effort });
+
+  const handleSessionContextWindowChange = (contextWindow: string) =>
+    handleSessionConfigChange({ contextWindow });
 
   const handleSessionFastModeToggle = (nextActive: boolean) =>
     handleSessionConfigChange({ serviceTier: nextActive ? "fast" : "flex" });
@@ -2574,6 +2614,9 @@ export default function Chat() {
               ...(Object.prototype.hasOwnProperty.call(updated, "reasoningEffort") && {
                 reasoningEffort: updated.reasoningEffort,
               }),
+              ...(Object.prototype.hasOwnProperty.call(updated, "contextWindow") && {
+                contextWindow: updated.contextWindow,
+              }),
               ...(Object.prototype.hasOwnProperty.call(updated, "serviceTier") && {
                 serviceTier: updated.serviceTier,
               }),
@@ -2815,6 +2858,7 @@ export default function Chat() {
     setSendingFor(sessionId, true);
 
     const reasoningEffort = currentSessionReasoningEffort();
+    const contextWindow = currentSessionContextWindow();
     const serviceTier = currentSessionServiceTier();
     const commandText = args ? `/${commandName} ${args}` : `/${commandName}`;
     const tempMessageId = `msg-temp-${Date.now()}`;
@@ -2850,6 +2894,7 @@ export default function Chat() {
         mode: currentAvailableModes().some(mode => mode.id === agent.id) ? agent.id : undefined,
         modelId,
         reasoningEffort,
+        contextWindow,
         serviceTier,
       });
       // Check if assistant message is finalized
@@ -2907,6 +2952,7 @@ export default function Chat() {
     setSendingFor(sessionId, true);
 
     const reasoningEffort = currentSessionReasoningEffort();
+    const contextWindow = currentSessionContextWindow();
     const serviceTier = currentSessionServiceTier();
     const tempMessageId = `msg-temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const tempPartId = `part-temp-${Date.now()}`;
@@ -2939,6 +2985,7 @@ export default function Chat() {
         modelId,
         images,
         reasoningEffort,
+        contextWindow,
         serviceTier,
       }).catch((error) => {
         logger.error("[SendMessage] Failed to enqueue message:", error);
@@ -3019,6 +3066,7 @@ export default function Chat() {
         modelId,
         images,
         reasoningEffort,
+        contextWindow,
         serviceTier,
       });
       // sendMessage RPC resolved — the engine considers the prompt handled.
@@ -3738,12 +3786,16 @@ export default function Chat() {
                             modelPlaceholder={t().chat.modelIdPlaceholder}
                             modelAriaLabel={t().engine.defaultModel}
                             supportedEfforts={currentSupportedEfforts()}
+                            effortLabels={currentReasoningEffortLabels()}
                             selectedEffort={currentSessionReasoningEffort() ?? null}
+                            contextWindowOptions={currentContextWindowOptions()}
+                            selectedContextWindow={currentSessionContextWindow()}
                             fastModeSupported={currentFastModeSupported()}
                             serviceTier={currentSessionServiceTier()}
                             scopeHint={t().chat.sessionScopeHint}
                             onModelChange={handleSessionModelChange}
                             onReasoningEffortChange={handleSessionReasoningEffortChange}
+                            onContextWindowChange={handleSessionContextWindowChange}
                             onFastModeToggle={handleSessionFastModeToggle}
                           />
                         </Show>

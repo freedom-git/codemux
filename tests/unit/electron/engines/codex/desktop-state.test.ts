@@ -211,7 +211,7 @@ describe("convertDesktopConversation", () => {
       ],
     })] }));
     expect(first.session).toMatchObject({
-      id: "thread-1", engineType: "codex-desktop", modelId: "custom-model", reasoningEffort: "max",
+      id: "thread-1", engineType: "codex-desktop", modelId: "custom-model", reasoningEffort: "xhigh",
       activityStatus: "running", engineMeta: { codexThreadId: "thread-1", desktopHostId: "local" },
     });
     expect(first.messages.map((message) => message.engineMeta?.codexItemId)).toEqual(["user-1", "agent-1"]);

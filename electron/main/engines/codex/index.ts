@@ -783,7 +783,7 @@ export class CodexAdapter extends EngineAdapter {
 
   getCapabilities(): EngineCapabilities {
     return {
-      reasoningEffortOptions: ["low", "medium", "high", "max", "ultra"],
+      reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max", "ultra"],
       providerModelHierarchy: false,
       dynamicModes: true,
       messageCancellation: true,

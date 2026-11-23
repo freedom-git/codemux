@@ -111,6 +111,11 @@ const rejectPermission = (feedback?: string): PermissionRequestResult => (
 const userNotAvailablePermission = (): PermissionRequestResult => ({ kind: "user-not-available" });
 
 type CopilotReasoningEffort = NonNullable<SessionConfig["reasoningEffort"]>;
+type CopilotContextTier = NonNullable<SessionConfig["contextTier"]>;
+
+function isCopilotContextTier(value: unknown): value is CopilotContextTier {
+  return value === "default" || value === "long_context";
+}
 
 function buildCopilotSubprocessEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extraEnv };
@@ -200,6 +205,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
   private cachedModels: UnifiedModelInfo[] = [];
   private sessionModes = new Map<string, string>();
   private sessionReasoningEfforts = new Map<string, ReasoningEffort>();
+  private sessionContextWindows = new Map<string, CopilotContextTier>();
   private sessionDirectories = new Map<string, string>();
   private sessionTitles?: Map<string, string>;
 
@@ -350,6 +356,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
       messageEnqueue: true,
       slashCommands: true,
       availableModes: this.getModes(),
+      reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max"],
     };
   }
 
@@ -480,6 +487,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
       mode?: string;
       modelId?: string;
       reasoningEffort?: ReasoningEffort | null;
+      contextWindow?: string | null;
       directory?: string;
       /**
        * Internal flag: when true, skip creating and emitting the user message
@@ -492,14 +500,16 @@ export class CopilotSdkAdapter extends EngineAdapter {
     },
   ): Promise<UnifiedMessage> {
     if (options?.reasoningEffort === "ultra") throw new Error("Copilot does not support ultra reasoning effort");
+    if (options?.contextWindow != null && !isCopilotContextTier(options.contextWindow)) {
+      throw new Error(`Invalid Copilot context window tier: ${options.contextWindow}`);
+    }
     const session = await this.ensureActiveSession(sessionId, options?.directory);
     const now = Date.now();
 
+    let needsModelSwitch = false;
     if (options?.modelId && options.modelId !== this.currentModelId) {
       this.currentModelId = options.modelId;
-      try {
-        await session.rpc.model.switchTo(this.buildModelSwitchConfig(sessionId, options.modelId));
-      } catch (err) {}
+      needsModelSwitch = true;
     }
 
     // Apply reasoning effort if it changed (same pattern as modelId)
@@ -511,12 +521,27 @@ export class CopilotSdkAdapter extends EngineAdapter {
         } else {
           this.sessionReasoningEfforts.delete(sessionId);
         }
-        if (this.currentModelId) {
-          try {
-            await session.rpc.model.switchTo(this.buildModelSwitchConfig(sessionId, this.currentModelId));
-          } catch (err) {}
-        }
+        needsModelSwitch = true;
       }
+    }
+
+    // Apply context window tier if it changed
+    if (options?.contextWindow !== undefined) {
+      const current = this.sessionContextWindows.get(sessionId) ?? null;
+      if (options.contextWindow !== current) {
+        if (options.contextWindow) {
+          this.sessionContextWindows.set(sessionId, options.contextWindow);
+        } else {
+          this.sessionContextWindows.delete(sessionId);
+        }
+        needsModelSwitch = true;
+      }
+    }
+
+    if (needsModelSwitch && this.currentModelId) {
+      try {
+        await session.rpc.model.switchTo(this.buildModelSwitchConfig(sessionId, this.currentModelId));
+      } catch (err) {}
     }
 
     if (options?.mode) {
@@ -841,23 +866,68 @@ export class CopilotSdkAdapter extends EngineAdapter {
     return this.sessionReasoningEfforts.get(sessionId) ?? null;
   }
 
+  override async setContextWindow(sessionId: string, contextWindow: string | null): Promise<void> {
+    if (contextWindow !== null && !isCopilotContextTier(contextWindow)) {
+      throw new Error(`Invalid Copilot context window tier: ${contextWindow}`);
+    }
+    if (contextWindow) {
+      this.sessionContextWindows.set(sessionId, contextWindow);
+    } else {
+      this.sessionContextWindows.delete(sessionId);
+    }
+    const session = this.activeSessions.get(sessionId);
+    if (session && this.currentModelId) {
+      try {
+        await session.rpc.model.switchTo(this.buildModelSwitchConfig(sessionId, this.currentModelId));
+      } catch (err) {}
+    }
+  }
+
+  override getContextWindow(sessionId: string): string | null {
+    return this.sessionContextWindows.get(sessionId) ?? null;
+  }
+
   private buildModelSwitchConfig(sessionId: string, modelId: string): {
     modelId: string;
     reasoningEffort?: CopilotReasoningEffort;
+    contextTier?: CopilotContextTier;
   } {
-    const sdkEffort = this.getSdkReasoningEffort(sessionId);
-    return sdkEffort ? { modelId, reasoningEffort: sdkEffort } : { modelId };
+    const cachedModel = this.cachedModels.find((m) => m.modelId === modelId);
+    const rawEffort = this.sessionReasoningEfforts.get(sessionId);
+    const supportedEfforts = cachedModel?.capabilities?.supportedReasoningEfforts;
+    const sdkEffort = rawEffort && (!supportedEfforts?.length || supportedEfforts.includes(rawEffort))
+      ? this.toSdkReasoningEffort(rawEffort)
+      : undefined;
+    const rawTier = this.sessionContextWindows.get(sessionId);
+    const sdkContextTier = rawTier && (!cachedModel || Boolean(cachedModel.capabilities?.contextWindowOptions?.length))
+      ? rawTier
+      : undefined;
+    return {
+      modelId,
+      ...(sdkEffort ? { reasoningEffort: sdkEffort } : {}),
+      ...(sdkContextTier ? { contextTier: sdkContextTier } : {}),
+    };
   }
 
   /** Map unified reasoning effort to Copilot SDK's ReasoningEffort */
   private toSdkReasoningEffort(effort: ReasoningEffort): CopilotReasoningEffort | undefined {
     if (effort === "ultra") return undefined;
-    return effort === "max" ? "xhigh" : effort;
+    return effort as CopilotReasoningEffort;
   }
 
   private getSdkReasoningEffort(sessionId: string): CopilotReasoningEffort | undefined {
     const effort = this.sessionReasoningEfforts.get(sessionId);
     return effort ? this.toSdkReasoningEffort(effort) : undefined;
+  }
+
+  private getSdkContextTier(sessionId: string): CopilotContextTier | undefined {
+    const tier = this.sessionContextWindows.get(sessionId);
+    if (!tier) return undefined;
+    if (this.currentModelId) {
+      const cachedModel = this.cachedModels.find((m) => m.modelId === this.currentModelId);
+      if (cachedModel && !cachedModel.capabilities?.contextWindowOptions?.length) return undefined;
+    }
+    return tier;
   }
 
   async replyPermission(permissionId: string, reply: PermissionReply, _sessionId?: string): Promise<void> {
@@ -1269,11 +1339,13 @@ export class CopilotSdkAdapter extends EngineAdapter {
 
     const workingDirectory = directory || this.sessionDirectories.get(sessionId);
     const sdkReasoningEffort = this.getSdkReasoningEffort(sessionId);
+    const sdkContextTier = this.getSdkContextTier(sessionId);
     const config: ResumeSessionConfig = {
       streaming: true,
       workingDirectory,
       model: this.currentModelId ?? undefined,
       ...(sdkReasoningEffort ? { reasoningEffort: sdkReasoningEffort } : {}),
+      ...(sdkContextTier ? { contextTier: sdkContextTier } : {}),
       systemMessage: { mode: "append" as const, content: CODEMUX_IDENTITY_PROMPT },
       onPermissionRequest: (req, ctx) => this.handlePermissionRequest(req, ctx),
       onUserInputRequest: (req, ctx) => this.handleUserInputRequest(req as any, ctx),
@@ -1298,6 +1370,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
           workingDirectory,
           model: this.currentModelId ?? undefined,
           ...(sdkReasoningEffort ? { reasoningEffort: sdkReasoningEffort } : {}),
+          ...(sdkContextTier ? { contextTier: sdkContextTier } : {}),
           systemMessage: { mode: "append" as const, content: CODEMUX_IDENTITY_PROMPT },
           onPermissionRequest: (req, ctx) => this.handlePermissionRequest(req, ctx),
           onUserInputRequest: (req, ctx) => this.handleUserInputRequest(req as any, ctx),

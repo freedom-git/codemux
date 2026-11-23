@@ -60,6 +60,8 @@ export class AgentHostProviderAdapter extends EngineAdapter {
   async setMode(id: string, mode: string) { return this.check(id).setMode(id, mode); }
   async setReasoningEffort(id: string, effort: ReasoningEffort | null) { return this.check(id).setReasoningEffort(id, effort); }
   getReasoningEffort(id: string) { return this.check(id).getReasoningEffort(id); }
+  async setContextWindow(id: string, contextWindow: string | null) { return this.check(id).setContextWindow(id, contextWindow); }
+  getContextWindow(id: string) { return this.check(id).getContextWindow(id); }
   getPendingPermissions(id?: string) { return this.source.getPendingPermissions(id).filter(permission => permission.engineType === this.engineType); }
   getPendingQuestions(id?: string) { return this.source.getPendingQuestions(id).filter(question => question.engineType === this.engineType); }
   replyPermission(id: string, reply: PermissionReply, sessionId?: string) {

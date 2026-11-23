@@ -92,6 +92,8 @@ export class HostRoutedAdapter extends EngineAdapter {
   setMode(id: string, mode: string) { return this.driver(id).setMode(id, mode); }
   setReasoningEffort(id: string, effort: ReasoningEffort | null) { return this.driver(id).setReasoningEffort(id, effort); }
   getReasoningEffort(id: string) { return this.driver(id).getReasoningEffort(id); }
+  setContextWindow(id: string, contextWindow: string | null) { return this.driver(id).setContextWindow(id, contextWindow); }
+  getContextWindow(id: string) { return this.driver(id).getContextWindow(id); }
   setServiceTier(id: string, tier: CodexServiceTier | null) { return this.driver(id).setServiceTier(id, tier); }
   getServiceTier(id: string) { return this.driver(id).getServiceTier(id); }
   setSessionArchived(id: string, archived: boolean) { return this.driver(id).setSessionArchived(id, archived); }

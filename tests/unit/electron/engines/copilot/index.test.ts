@@ -602,15 +602,16 @@ describe("CopilotSdkAdapter", () => {
       expect((adapter as any).activeSessions.has("stale-id")).toBe(false);
     });
 
-    it("includes reasoning effort in the resume config when set", async () => {
-      (adapter as any).sessionReasoningEfforts.set("s1", "max");
-      (adapter as any).currentModelId = "gpt-4o";
+    it("includes reasoning effort and context tier in the resume config when set", async () => {
+      (adapter as any).sessionReasoningEfforts.set("s1", "xhigh");
+      (adapter as any).sessionContextWindows.set("s1", "long_context");
+      (adapter as any).currentModelId = "gpt-6.1-sol";
 
       await (adapter as any).ensureActiveSession("s1", "/repo");
 
       expect(mockClientInstance.resumeSession).toHaveBeenCalledWith(
         "s1",
-        expect.objectContaining({ reasoningEffort: "xhigh" }),
+        expect.objectContaining({ reasoningEffort: "xhigh", contextTier: "long_context" }),
       );
     });
   });
@@ -755,14 +756,19 @@ describe("CopilotSdkAdapter", () => {
       const sendPromise = adapter.sendMessage(
         "s1",
         [{ type: "text", text: "hi" }],
-        { reasoningEffort: "max" },
+        { reasoningEffort: "max", contextWindow: "long_context" },
       );
       await flushMicrotasks();
       (adapter as any).handleSessionIdle("s1");
       await sendPromise;
 
       expect((adapter as any).sessionReasoningEfforts.get("s1")).toBe("max");
-      expect(sess.rpc.model.switchTo).toHaveBeenCalledWith({ modelId: "gpt-4o", reasoningEffort: "xhigh" });
+      expect((adapter as any).sessionContextWindows.get("s1")).toBe("long_context");
+      expect(sess.rpc.model.switchTo).toHaveBeenCalledWith({
+        modelId: "gpt-4o",
+        reasoningEffort: "max",
+        contextTier: "long_context",
+      });
     });
 
     it("clears reasoning effort when null is passed", async () => {
@@ -1945,11 +1951,7 @@ describe("CopilotSdkAdapter", () => {
     it("does not forward unsupported ultra to the SDK", () => {
       expect((adapter as any).toSdkReasoningEffort("ultra")).toBeUndefined();
     });
-    it("maps 'max' to 'xhigh'", () => {
-      expect((adapter as any).toSdkReasoningEffort("max")).toBe("xhigh");
-    });
-
-    it.each([["high", "high"], ["medium", "medium"], ["low", "low"]])(
+    it.each([["max", "max"], ["xhigh", "xhigh"], ["high", "high"], ["medium", "medium"], ["low", "low"], ["none", "none"]])(
       "passes '%s' through unchanged",
       (input, expected) => {
         expect((adapter as any).toSdkReasoningEffort(input)).toBe(expected);
@@ -1981,10 +1983,11 @@ describe("CopilotSdkAdapter", () => {
   });
 
   describe("buildModelSwitchConfig()", () => {
-    it("includes reasoningEffort in xhigh form when session has 'max' effort", () => {
-      (adapter as any).sessionReasoningEfforts.set("s1", "max");
-      const config = (adapter as any).buildModelSwitchConfig("s1", "gpt-4o");
-      expect(config).toEqual({ modelId: "gpt-4o", reasoningEffort: "xhigh" });
+    it("preserves xhigh and max reasoningEffort and includes contextTier when configured", () => {
+      (adapter as any).sessionReasoningEfforts.set("s1", "xhigh");
+      (adapter as any).sessionContextWindows.set("s1", "long_context");
+      const config = (adapter as any).buildModelSwitchConfig("s1", "gpt-6.1-sol");
+      expect(config).toEqual({ modelId: "gpt-6.1-sol", reasoningEffort: "xhigh", contextTier: "long_context" });
     });
 
     it("omits reasoningEffort when session has no effort configured", () => {

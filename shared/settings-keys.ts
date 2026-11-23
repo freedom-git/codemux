@@ -34,7 +34,7 @@ export function isSharedSettingsKey(key: string): key is SharedSettingsKey {
 
 const VALID_THEMES = new Set(["light", "dark", "system"]);
 const VALID_LOCALES = new Set(["en", "zh", "ru"]);
-const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "max", "ultra"]);
+const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const VALID_SERVICE_TIERS = new Set(["fast", "flex"]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

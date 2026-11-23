@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX 
 import { Portal } from "solid-js/web";
 import { ChatModelPicker } from "./ChatModelPicker";
 import { useI18n } from "../lib/i18n";
-import type { CodexServiceTier, ReasoningEffort, UnifiedModelInfo } from "../types/unified";
+import type { CodexServiceTier, ContextWindowOption, ReasoningEffort, UnifiedModelInfo } from "../types/unified";
 
 interface SessionControlsProps {
   models: UnifiedModelInfo[];
@@ -12,12 +12,16 @@ interface SessionControlsProps {
   modelPlaceholder: string;
   modelAriaLabel: string;
   supportedEfforts: ReasoningEffort[];
+  effortLabels?: Partial<Record<ReasoningEffort, string>>;
   selectedEffort: ReasoningEffort | null;
+  contextWindowOptions?: ContextWindowOption[];
+  selectedContextWindow?: string | null;
   fastModeSupported: boolean;
   serviceTier: CodexServiceTier | null;
   scopeHint: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  onContextWindowChange?: (contextWindowId: string) => void;
   onFastModeToggle: (nextActive: boolean) => void;
 }
 
@@ -65,16 +69,28 @@ export function SessionControls(props: SessionControlsProps) {
   );
 
   const effortLabels: Record<ReasoningEffort, () => string> = {
+    none: () => t().prompt.reasoningEffortNone,
     low: () => t().prompt.reasoningEffortLow,
     medium: () => t().prompt.reasoningEffortMedium,
     high: () => t().prompt.reasoningEffortHigh,
+    xhigh: () => t().prompt.reasoningEffortXHigh,
     max: () => t().prompt.reasoningEffortMax,
     ultra: () => t().prompt.reasoningEffortUltra,
   };
 
+  const resolveEffortLabel = (effort: ReasoningEffort): string =>
+    props.effortLabels?.[effort] ?? effortLabels[effort]?.() ?? effort;
+
   const effortLabel = createMemo(() => {
     const effort = props.selectedEffort;
-    return effort ? effortLabels[effort]?.() ?? effort : null;
+    return effort ? resolveEffortLabel(effort) : null;
+  });
+
+  const contextWindowOptions = createMemo(() => props.contextWindowOptions ?? []);
+
+  const contextWindowLabel = createMemo(() => {
+    if (contextWindowOptions().length <= 1 || !props.selectedContextWindow) return null;
+    return contextWindowOptions().find((option) => option.id === props.selectedContextWindow)?.label ?? null;
   });
 
   const fastActive = createMemo(() => props.serviceTier === "fast");
@@ -83,6 +99,8 @@ export function SessionControls(props: SessionControlsProps) {
     const parts = [modelLabel()];
     const effort = effortLabel();
     if (effort && props.supportedEfforts.length > 1) parts.push(effort);
+    const contextLabel = contextWindowLabel();
+    if (contextLabel) parts.push(contextLabel);
     if (props.fastModeSupported && fastActive()) parts.push(t().engine.fastMode);
     return parts.join(" · ");
   });
@@ -218,7 +236,34 @@ export function SessionControls(props: SessionControlsProps) {
                             }`}
                             onClick={() => props.onReasoningEffortChange(effort)}
                           >
-                            {effortLabels[effort]?.() ?? effort}
+                            {resolveEffortLabel(effort)}
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </SettingRow>
+              </Show>
+
+              <Show when={contextWindowOptions().length > 1}>
+                <SettingRow label={t().engine.contextWindow} description={t().engine.contextWindowDesc}>
+                  <div class="flex gap-1 overflow-x-auto rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+                    <For each={contextWindowOptions()}>
+                      {(option) => {
+                        const active = () => props.selectedContextWindow === option.id;
+                        return (
+                          <button
+                            type="button"
+                            aria-pressed={active()}
+                            title={option.description}
+                            class={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                              active()
+                                ? "bg-white text-slate-800 shadow-sm dark:bg-slate-700 dark:text-slate-100"
+                                : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                            }`}
+                            onClick={() => props.onContextWindowChange?.(option.id)}
+                          >
+                            {option.label}
                           </button>
                         );
                       }}

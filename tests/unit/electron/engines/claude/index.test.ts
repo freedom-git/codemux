@@ -156,15 +156,15 @@ function seedV2Session(adapter: ClaudeCodeAdapter, sessionId: string, mockSessio
 // ---------------------------------------------------------------------------
 
 describe("getClaudeReasoningCapabilities", () => {
-  it("filters invalid effort levels and picks a supported default", () => {
+  it("filters invalid effort levels while preserving xhigh and max", () => {
     const caps = getClaudeReasoningCapabilities({
       supportsEffort: true,
-      supportedEffortLevels: ["high", "turbo", "max", "ultra"] as any,
+      supportedEffortLevels: ["high", "turbo", "xhigh", "max", "ultra"] as any,
     } as ClaudeModelInfo);
 
     expect(caps).toEqual({
       reasoning: true,
-      supportedReasoningEfforts: ["high", "max"],
+      supportedReasoningEfforts: ["high", "xhigh", "max"],
       defaultReasoningEffort: "high",
     });
   });

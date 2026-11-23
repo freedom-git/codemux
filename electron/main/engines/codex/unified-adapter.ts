@@ -200,7 +200,7 @@ export class UnifiedCodexAdapter extends EngineAdapter {
   getCapabilities(): EngineCapabilities {
     return {
       ...this.defaultRuntime?.execution.getCapabilities(),
-      reasoningEffortOptions: ["low", "medium", "high", "max", "ultra"],
+      reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max", "ultra"],
       authoritativeSessionState: true, questionDismissStopsTurn: true,
       sessionSharing: true,
       sessionCatalog: !!this.options.catalogFactory, catalogManagement: this.options.catalogManagement === true,

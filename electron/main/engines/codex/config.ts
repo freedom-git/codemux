@@ -216,11 +216,12 @@ export function normalizeDirectory(directory: string): string {
 
 export function toCodexEffort(effort: ReasoningEffort): string {
   switch (effort) {
-    case "max":
-      return "xhigh";
-    case "high":
-    case "medium":
+    case "none":
     case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+    case "max":
     case "ultra":
       return effort;
     default:
@@ -230,16 +231,14 @@ export function toCodexEffort(effort: ReasoningEffort): string {
 
 export function fromCodexEffort(codexEffort: string): ReasoningEffort | undefined {
   switch (codexEffort) {
+    case "none":
     case "low":
-      return "low";
     case "medium":
-      return "medium";
     case "high":
-      return "high";
     case "xhigh":
-      return "max";
+    case "max":
     case "ultra":
-      return "ultra";
+      return codexEffort;
     default:
       return undefined;
   }

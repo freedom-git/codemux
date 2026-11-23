@@ -7,7 +7,9 @@ import type {
 } from "@github/copilot-sdk";
 import { inferToolKind, normalizeToolName } from "../../../../src/types/tool-mapping";
 import {
+  formatContextWindowTokens,
   normalizeReasoningEffort,
+  type ContextWindowOption,
   type EngineType,
   type UnifiedSession,
   type UnifiedMessage,
@@ -22,16 +24,9 @@ import {
 } from "../../../../src/types/unified";
 import { homedir } from "os";
 
-const COPILOT_REASONING_EFFORT_MAP: Record<string, ReasoningEffort> = {
-  xhigh: "max",
-  low: "low",
-  medium: "medium",
-  high: "high",
-};
-
 function normalizeCopilotReasoningEffort(value: unknown): ReasoningEffort | undefined {
   if (typeof value !== "string" || value === "ultra") return undefined;
-  return normalizeReasoningEffort(COPILOT_REASONING_EFFORT_MAP[value] ?? value);
+  return normalizeReasoningEffort(value);
 }
 
 function normalizeCopilotReasoningEfforts(values: readonly unknown[] | undefined): ReasoningEffort[] | undefined {
@@ -40,6 +35,40 @@ function normalizeCopilotReasoningEfforts(values: readonly unknown[] | undefined
     .map((value) => normalizeCopilotReasoningEffort(value))
     .filter((value): value is ReasoningEffort => value != null);
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function extractCopilotContextWindowOptions(model: ModelInfo): {
+  options?: ContextWindowOption[];
+  defaultContextWindow?: string;
+} {
+  const billing = (model as unknown as Record<string, unknown>).billing as
+    | {
+        tokenPrices?: {
+          contextMax?: unknown;
+          longContext?: { contextMax?: unknown };
+        };
+      }
+    | undefined;
+  const defaultTokens = billing?.tokenPrices?.contextMax;
+  const longTokens = billing?.tokenPrices?.longContext?.contextMax;
+  if (
+    typeof defaultTokens !== "number"
+    || !Number.isFinite(defaultTokens)
+    || defaultTokens <= 0
+    || typeof longTokens !== "number"
+    || !Number.isFinite(longTokens)
+    || longTokens <= 0
+    || longTokens === defaultTokens
+  ) {
+    return {};
+  }
+  return {
+    options: [
+      { id: "default", label: formatContextWindowTokens(defaultTokens), tokens: defaultTokens },
+      { id: "long_context", label: formatContextWindowTokens(longTokens), tokens: longTokens },
+    ],
+    defaultContextWindow: "default",
+  };
 }
 
 /**
@@ -479,13 +508,21 @@ export function upsertPart(parts: UnifiedPart[], part: UnifiedPart): void {
 }
 
 export function sdkModelToUnified(engineType: EngineType, model: ModelInfo): UnifiedModelInfo {
-  const reasoningSupported = model.capabilities?.supports?.reasoningEffort === true;
+  const rawSupports = model.capabilities?.supports as Record<string, unknown> | undefined;
+  const snakeCaseEfforts = Array.isArray(rawSupports?.reasoning_effort)
+    ? rawSupports.reasoning_effort
+    : undefined;
+  const reasoningSupported = model.capabilities?.supports?.reasoningEffort === true || Boolean(snakeCaseEfforts?.length);
   const supportedLevels = reasoningSupported
-    ? normalizeCopilotReasoningEfforts(model.supportedReasoningEfforts)
+    ? normalizeCopilotReasoningEfforts(snakeCaseEfforts?.length ? snakeCaseEfforts : model.supportedReasoningEfforts)
     : undefined;
   const defaultLevel = reasoningSupported
     ? normalizeCopilotReasoningEffort(model.defaultReasoningEffort)
+      ?? (snakeCaseEfforts?.length && supportedLevels?.length
+        ? (supportedLevels.includes("medium") ? "medium" : supportedLevels[0])
+        : undefined)
     : undefined;
+  const contextWindow = extractCopilotContextWindowOptions(model);
 
   return {
     modelId: model.id,
@@ -496,6 +533,10 @@ export function sdkModelToUnified(engineType: EngineType, model: ModelInfo): Uni
       reasoning: reasoningSupported,
       supportedReasoningEfforts: supportedLevels,
       defaultReasoningEffort: defaultLevel,
+      ...(contextWindow.options ? {
+        contextWindowOptions: contextWindow.options,
+        defaultContextWindow: contextWindow.defaultContextWindow,
+      } : {}),
     },
     meta: {
       maxContextTokens: model.capabilities?.limits?.max_context_window_tokens,

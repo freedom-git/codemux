@@ -300,6 +300,16 @@ export abstract class EngineAdapter extends EventEmitter {
     return null;
   }
 
+  // --- Context Window ---
+
+  /** Set the context window option for a session (no-op by default) */
+  async setContextWindow(_sessionId: string, _contextWindow: string | null): Promise<void> {}
+
+  /** Get the current context window option for a session */
+  getContextWindow(_sessionId: string): string | null {
+    return null;
+  }
+
   // --- Service Tier ---
 
   /** Set the service tier for a session (no-op by default) */
@@ -403,7 +413,7 @@ export abstract class EngineAdapter extends EventEmitter {
     _sessionId: string,
     _commandName: string,
     _args: string,
-    _options?: { mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; serviceTier?: CodexServiceTier | null; directory?: string },
+    _options?: { mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null; directory?: string },
   ): Promise<CommandInvokeResult> {
     return { handledAsCommand: false };
   }

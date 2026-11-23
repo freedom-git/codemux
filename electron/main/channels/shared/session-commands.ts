@@ -22,9 +22,11 @@ function escapeMarkdownInline(value: string): string {
 }
 
 const effortLabels: Record<ReasoningEffort, string> = {
+  none: "无",
   low: "低",
   medium: "中",
   high: "高",
+  xhigh: "超高",
   max: "最大",
   ultra: "超高",
 };

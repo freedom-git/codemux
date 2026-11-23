@@ -864,6 +864,7 @@ class ConversationStore {
       mode?: string | null;
       modelId?: string | null;
       reasoningEffort?: ReasoningEffort | null;
+      contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
     },
   ): ConversationMeta | null {
@@ -893,6 +894,14 @@ class ConversationStore {
       const nextEffort = patch.reasoningEffort ?? undefined;
       if (conv.reasoningEffort !== nextEffort) {
         conv.reasoningEffort = nextEffort;
+        changed = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "contextWindow")) {
+      const nextContextWindow = patch.contextWindow ?? undefined;
+      if (conv.contextWindow !== nextContextWindow) {
+        conv.contextWindow = nextContextWindow;
         changed = true;
       }
     }

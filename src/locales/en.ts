@@ -593,9 +593,11 @@ export interface LocaleDict {
     removeImage: string;
     /** Slash command autocomplete: no matching commands */
     noCommandsFound: string;
+    reasoningEffortNone: string;
     reasoningEffortLow: string;
     reasoningEffortMedium: string;
     reasoningEffortHigh: string;
+    reasoningEffortXHigh: string;
     reasoningEffortMax: string;
     reasoningEffortUltra: string;
   };
@@ -786,6 +788,8 @@ export interface LocaleDict {
     defaultModelDesc: string;
     reasoningEffort: string;
     reasoningEffortDesc: string;
+    contextWindow: string;
+    contextWindowDesc: string;
     fastMode: string;
     fastModeDesc: string;
     fastModeUnavailable: string;
@@ -1710,9 +1714,11 @@ export const en: LocaleDict = {
     imageTotalTooLarge: "Total image size too large (max 12MB)",
     removeImage: "Remove image",
     noCommandsFound: "No commands found",
+    reasoningEffortNone: "None",
     reasoningEffortLow: "Low",
     reasoningEffortMedium: "Medium",
     reasoningEffortHigh: "High",
+    reasoningEffortXHigh: "X-High",
     reasoningEffortMax: "Max",
     reasoningEffortUltra: "Ultra",
   },
@@ -1900,6 +1906,8 @@ export const en: LocaleDict = {
     defaultModelDesc: "Model used for conversations",
     reasoningEffort: "Reasoning Effort",
     reasoningEffortDesc: "Controls how much effort the model puts into reasoning",
+    contextWindow: "Context Window",
+    contextWindowDesc: "Selects the context window size for this model",
     fastMode: "Fast Mode",
     fastModeDesc: "Higher speed inference at 2\u00d7 credit usage (Codex only)",
     fastModeUnavailable: "Fast mode requires ChatGPT authentication",

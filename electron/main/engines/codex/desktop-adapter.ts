@@ -151,7 +151,7 @@ export class CodexDesktopAdapter extends EngineAdapter {
   }
   getCapabilities(): EngineCapabilities {
     return {
-      reasoningEffortOptions: ["low", "medium", "high", "max", "ultra"],
+      reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max", "ultra"],
       sessionCatalog: !!this.options.catalog,
       catalogManagement: this.options.catalog?.managementAvailable === true,
       sessionArchive: false, hideArchivedSessions: true, confirmedSessionRemoval: true,

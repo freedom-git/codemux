@@ -497,6 +497,7 @@ export class GatewayServer {
           mode: req.mode,
           modelId: req.modelId,
           reasoningEffort: req.reasoningEffort,
+          contextWindow: typeof req.contextWindow === "string" || req.contextWindow === null ? req.contextWindow : undefined,
           serviceTier: isCodexServiceTier(req.serviceTier) ? req.serviceTier : undefined,
         });
       }
@@ -533,6 +534,14 @@ export class GatewayServer {
             throw Object.assign(
               new Error(`Invalid reasoningEffort: ${JSON.stringify(config.reasoningEffort)}`),
               { code: "INVALID_REASONING_EFFORT" },
+            );
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(config, "contextWindow") && config.contextWindow !== null) {
+          if (typeof config.contextWindow !== "string" || config.contextWindow.trim().length === 0 || config.contextWindow.length > 64) {
+            throw Object.assign(
+              new Error(`Invalid contextWindow: ${JSON.stringify(config.contextWindow)}`),
+              { code: "INVALID_CONTEXT_WINDOW" },
             );
           }
         }
@@ -699,6 +708,7 @@ export class GatewayServer {
           mode: req.mode,
           modelId: req.modelId,
           reasoningEffort: req.reasoningEffort,
+          contextWindow: typeof req.contextWindow === "string" || req.contextWindow === null ? req.contextWindow : undefined,
           serviceTier: isCodexServiceTier(req.serviceTier) ? req.serviceTier : undefined,
         });
       }

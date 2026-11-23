@@ -191,8 +191,8 @@ describe("EngineManager catalog integration", () => {
     });
     publish();
     const conv = manager.listAllSessions()[0];
-    await manager.updateSessionConfig(conv.id, { reasoningEffort: "ultra" });
-    expect(setEffort).toHaveBeenCalledWith("native-thread", "ultra");
+    await manager.updateSessionConfig(conv.id, { reasoningEffort: "xhigh" });
+    expect(setEffort).toHaveBeenCalledWith("native-thread", "xhigh");
   });
 
   it("suppresses an empty local discard across stale catalogs, events, and restart", async () => {

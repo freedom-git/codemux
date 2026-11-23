@@ -27,6 +27,7 @@ export interface SessionInfo {
   mode?: string;
   modelId?: string;
   reasoningEffort?: ReasoningEffort;
+  contextWindow?: string;
   serviceTier?: CodexServiceTier;
   projectID?: string | null;
   worktreeId?: string;
@@ -139,7 +140,7 @@ export function toSessionInfo(session: UnifiedSession, fallbackProjectId?: strin
     connection: session.connection,
     archived: session.archived, catalogSourceId: session.catalogSourceId, catalogAvailable: session.catalogAvailable,
     directory: session.directory || "", mode: session.mode, modelId: session.modelId,
-    reasoningEffort: session.reasoningEffort, serviceTier: session.serviceTier,
+    reasoningEffort: session.reasoningEffort, contextWindow: session.contextWindow, serviceTier: session.serviceTier,
     projectID: session.catalogSourceId ? session.projectId ?? null : fallbackProjectId ?? session.projectId ?? undefined,
     worktreeId: session.worktreeId,
     createdAt: new Date(session.time.created).toISOString(), updatedAt: new Date(session.time.updated).toISOString(),

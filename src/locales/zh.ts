@@ -599,11 +599,13 @@ export const zh: LocaleDict = {
     imageTotalTooLarge: "图片总大小过大（最大 12MB）",
     removeImage: "移除图片",
     noCommandsFound: "未找到匹配的命令",
+    reasoningEffortNone: "无",
     reasoningEffortLow: "低",
     reasoningEffortMedium: "中",
     reasoningEffortHigh: "高",
+    reasoningEffortXHigh: "超高",
     reasoningEffortMax: "最大",
-    reasoningEffortUltra: "超高",
+    reasoningEffortUltra: "极高",
   },
 
   // Message Parts
@@ -791,6 +793,8 @@ export const zh: LocaleDict = {
     defaultModelDesc: "会话使用的模型",
     reasoningEffort: "推理级别",
     reasoningEffortDesc: "控制模型在推理上投入的精力",
+    contextWindow: "上下文窗口",
+    contextWindowDesc: "选择当前模型的上下文窗口大小",
     fastMode: "快速模式",
     fastModeDesc: "更快的推理速度，消耗 2 倍积分（仅限 Codex）",
     fastModeUnavailable: "快速模式需要 ChatGPT 认证",

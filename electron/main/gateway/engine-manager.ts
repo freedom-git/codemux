@@ -91,6 +91,7 @@ function convToSession(conv: ConversationMeta): UnifiedSession {
     mode: conv.mode,
     modelId: conv.modelId,
     reasoningEffort: conv.reasoningEffort,
+    contextWindow: conv.contextWindow,
     serviceTier: conv.serviceTier,
     ...(typeof conv.archived === "boolean" ? { archived: conv.archived } : {}),
     worktreeId: conv.worktreeId,
@@ -510,7 +511,7 @@ export class EngineManager extends EventEmitter {
       return;
     }
     const fields: Partial<UnifiedSession> = { ...this.authoritativeLiveFields.get(conversationId) };
-    for (const key of ["mode", "modelId", "reasoningEffort", "serviceTier", "activityStatus", "connection"] as const) {
+    for (const key of ["mode", "modelId", "reasoningEffort", "contextWindow", "serviceTier", "activityStatus", "connection"] as const) {
       if (Object.prototype.hasOwnProperty.call(session, key)) Object.assign(fields, { [key]: session[key] });
     }
     this.authoritativeLiveFields.set(conversationId, fields);
@@ -835,6 +836,7 @@ export class EngineManager extends EventEmitter {
           Object.prototype.hasOwnProperty.call(data.session, "mode")
           || Object.prototype.hasOwnProperty.call(data.session, "modelId")
           || Object.prototype.hasOwnProperty.call(data.session, "reasoningEffort")
+          || Object.prototype.hasOwnProperty.call(data.session, "contextWindow")
           || Object.prototype.hasOwnProperty.call(data.session, "serviceTier")
         ) {
           conversationStore.updateSessionConfig(convId, {
@@ -842,6 +844,9 @@ export class EngineManager extends EventEmitter {
             ...(Object.prototype.hasOwnProperty.call(data.session, "modelId") ? { modelId: data.session.modelId ?? null } : {}),
             ...(Object.prototype.hasOwnProperty.call(data.session, "reasoningEffort")
               ? { reasoningEffort: data.session.reasoningEffort ?? null }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(data.session, "contextWindow")
+              ? { contextWindow: data.session.contextWindow ?? null }
               : {}),
             ...(Object.prototype.hasOwnProperty.call(data.session, "serviceTier")
               ? { serviceTier: data.session.serviceTier ?? null }
@@ -1790,16 +1795,20 @@ export class EngineManager extends EventEmitter {
       mode?: string;
       modelId?: string;
       reasoningEffort?: ReasoningEffort | null;
+      contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
     },
   ): {
     mode?: string;
     modelId?: string;
     reasoningEffort?: ReasoningEffort | null;
+    contextWindow?: string | null;
     serviceTier?: CodexServiceTier | null;
   } {
     const hasExplicitReasoningEffort = options != null
       && Object.prototype.hasOwnProperty.call(options, "reasoningEffort");
+    const hasExplicitContextWindow = options != null
+      && Object.prototype.hasOwnProperty.call(options, "contextWindow");
     const hasExplicitServiceTier = options != null
       && Object.prototype.hasOwnProperty.call(options, "serviceTier");
 
@@ -1809,6 +1818,9 @@ export class EngineManager extends EventEmitter {
       reasoningEffort: hasExplicitReasoningEffort
         ? (options?.reasoningEffort ?? null)
         : (conv.reasoningEffort ?? undefined),
+      contextWindow: hasExplicitContextWindow
+        ? (options?.contextWindow ?? null)
+        : (conv.contextWindow ?? undefined),
       serviceTier: hasExplicitServiceTier
         ? (options?.serviceTier ?? null)
         : (conv.serviceTier ?? undefined),
@@ -1821,6 +1833,7 @@ export class EngineManager extends EventEmitter {
       mode?: string | null;
       modelId?: string | null;
       reasoningEffort?: ReasoningEffort | null;
+      contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
     },
   ): ConversationMeta {
@@ -1852,7 +1865,7 @@ export class EngineManager extends EventEmitter {
   async sendMessage(
     sessionId: string,
     content: MessagePromptContent[],
-    options?: { clientMessageId?: string; mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; serviceTier?: CodexServiceTier | null },
+    options?: { clientMessageId?: string; mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null },
   ): Promise<UnifiedMessage> {
     sessionId = conversationStore.resolveConversationId(sessionId);
     const trackQueuedTiming = this.markSessionActive(sessionId);
@@ -2179,7 +2192,7 @@ export class EngineManager extends EventEmitter {
     sessionId: string,
     commandName: string,
     args: string,
-    options?: { mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; serviceTier?: CodexServiceTier | null },
+    options?: { mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null },
   ): Promise<CommandInvokeResult> {
     sessionId = conversationStore.resolveConversationId(sessionId);
     const trackQueuedTiming = this.markSessionActive(sessionId);
@@ -2263,6 +2276,7 @@ export class EngineManager extends EventEmitter {
       mode?: string | null;
       modelId?: string | null;
       reasoningEffort?: ReasoningEffort | null;
+      contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
     } = {};
 
@@ -2274,6 +2288,9 @@ export class EngineManager extends EventEmitter {
     }
     if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) {
       patch.reasoningEffort = config.reasoningEffort ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, "contextWindow")) {
+      patch.contextWindow = config.contextWindow ?? null;
     }
     if (Object.prototype.hasOwnProperty.call(config, "serviceTier")) {
       patch.serviceTier = config.serviceTier ?? null;
@@ -2313,6 +2330,9 @@ export class EngineManager extends EventEmitter {
     }
     if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) {
       await adapter.setReasoningEffort(engineSessionId, config.reasoningEffort ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(config, "contextWindow")) {
+      await adapter.setContextWindow(engineSessionId, config.contextWindow ?? null);
     }
     if (Object.prototype.hasOwnProperty.call(config, "serviceTier")) {
       await adapter.setServiceTier(engineSessionId, config.serviceTier ?? null);

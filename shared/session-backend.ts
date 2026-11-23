@@ -8,6 +8,7 @@ export interface SendMessageOptions {
   mode?: string;
   modelId?: string;
   reasoningEffort?: ReasoningEffort | null;
+  contextWindow?: string | null;
   serviceTier?: CodexServiceTier | null;
   directory?: string;
 }

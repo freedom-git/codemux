@@ -796,21 +796,21 @@ describe('copilot-converters', () => {
       expect(unified.meta?.maxContextTokens).toBe(128000);
     });
 
-    it('maps supportedReasoningEfforts with xhigh → max', () => {
+    it('preserves supportedReasoningEfforts including xhigh and max while filtering unsupported ultra', () => {
       const sdkModel: ModelInfo = {
         id: 'o3',
         name: 'O3',
         capabilities: { supports: { vision: false, reasoningEffort: true } as any, limits: { max_context_window_tokens: 200000 } },
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'ultra'] as any,
+        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as any,
         defaultReasoningEffort: 'high' as any,
       } as any;
 
       const unified = sdkModelToUnified('copilot', sdkModel);
-      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max']);
+      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
       expect(unified.capabilities?.defaultReasoningEffort).toBe('high');
     });
 
-    it('maps defaultReasoningEffort xhigh → max', () => {
+    it('preserves defaultReasoningEffort xhigh without collapsing to max', () => {
       const sdkModel: ModelInfo = {
         id: 'o3-max',
         name: 'O3 Max',
@@ -820,8 +820,8 @@ describe('copilot-converters', () => {
       } as any;
 
       const unified = sdkModelToUnified('copilot', sdkModel);
-      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['high', 'max']);
-      expect(unified.capabilities?.defaultReasoningEffort).toBe('max');
+      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['high', 'xhigh']);
+      expect(unified.capabilities?.defaultReasoningEffort).toBe('xhigh');
     });
 
     it('returns undefined reasoning efforts when model has no reasoning support', () => {
@@ -862,16 +862,11 @@ describe('copilot-converters', () => {
       } as any;
 
       const unified = sdkModelToUnified('copilot', sdkModel);
-      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['low', 'max']);
+      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['low', 'xhigh']);
       expect(unified.capabilities?.defaultReasoningEffort).toBeUndefined();
     });
 
     it('passes single-value SDK metadata through unchanged (no suffix logic)', () => {
-      // Real-world case: Copilot returns `claude-opus-4.7-xhigh` with
-      // supportedReasoningEfforts=["xhigh"]. The converter must not invent
-      // anything — it just normalizes xhigh → max and trusts the SDK. The
-      // "don't transmit when there's no choice" decision happens later, in
-      // the engine adapter / UI gating, not here.
       const sdkModel = {
         id: 'claude-opus-4.7-xhigh',
         name: 'Claude Opus 4.7 (xhigh)',
@@ -881,8 +876,40 @@ describe('copilot-converters', () => {
       } as any;
 
       const unified = sdkModelToUnified('copilot', sdkModel);
-      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['max']);
-      expect(unified.capabilities?.defaultReasoningEffort).toBe('max');
+      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['xhigh']);
+      expect(unified.capabilities?.defaultReasoningEffort).toBe('xhigh');
+    });
+
+    it('prefers capabilities.supports.reasoning_effort array and extracts contextWindowOptions from billing.tokenPrices', () => {
+      const sdkModel = {
+        id: 'gpt-6.1-sol',
+        name: 'GPT-6.1 Sol',
+        capabilities: {
+          supports: {
+            vision: true,
+            reasoningEffort: false,
+            reasoning_effort: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+          },
+          limits: { max_context_window_tokens: 1050000 },
+        },
+        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        billing: {
+          tokenPrices: {
+            contextMax: 272000,
+            longContext: { contextMax: 922000 },
+          },
+        },
+      } as any;
+
+      const unified = sdkModelToUnified('copilot', sdkModel);
+      expect(unified.capabilities?.reasoning).toBe(true);
+      expect(unified.capabilities?.supportedReasoningEfforts).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+      expect(unified.capabilities?.defaultReasoningEffort).toBe('medium');
+      expect(unified.capabilities?.contextWindowOptions).toEqual([
+        { id: 'default', label: '272K', tokens: 272000 },
+        { id: 'long_context', label: '1M', tokens: 922000 },
+      ]);
+      expect(unified.capabilities?.defaultContextWindow).toBe('default');
     });
 
     // --- Branch coverage additions ---

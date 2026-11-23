@@ -1366,14 +1366,14 @@ export function formatPlanMarkdown(text: string): string {
 
 function normalizeHistoricalEffort(value: string): ReasoningEffort | undefined {
   switch (value) {
+    case "none":
     case "low":
-      return "low";
     case "medium":
-      return "medium";
     case "high":
-      return "high";
     case "xhigh":
-      return "max";
+    case "max":
+    case "ultra":
+      return value;
     default:
       return undefined;
   }

@@ -113,15 +113,19 @@ describe("codex/config.ts", () => {
   });
 
   it("maps reasoning effort to and from Codex values", () => {
-    expect(toCodexEffort("max")).toBe("xhigh");
+    expect(toCodexEffort("max")).toBe("max");
+    expect(toCodexEffort("xhigh")).toBe("xhigh");
     expect(toCodexEffort("medium")).toBe("medium");
     expect(toCodexEffort("low")).toBe("low");
+    expect(toCodexEffort("none")).toBe("none");
     expect(toCodexEffort("ultra")).toBe("ultra");
 
-    expect(fromCodexEffort("xhigh")).toBe("max");
+    expect(fromCodexEffort("max")).toBe("max");
+    expect(fromCodexEffort("xhigh")).toBe("xhigh");
     expect(fromCodexEffort("medium")).toBe("medium");
     expect(fromCodexEffort("high")).toBe("high");
     expect(fromCodexEffort("low")).toBe("low");
+    expect(fromCodexEffort("none")).toBe("none");
     expect(fromCodexEffort("ultra")).toBe("ultra");
     expect(fromCodexEffort("minimal")).toBeUndefined();
   });

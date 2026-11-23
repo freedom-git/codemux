@@ -36,9 +36,11 @@ export function ReasoningEffortSelector(props: ReasoningEffortSelectorProps) {
   };
 
   const levelLabels: Record<string, () => string> = {
+    none: () => t().prompt.reasoningEffortNone,
     low: () => t().prompt.reasoningEffortLow,
     medium: () => t().prompt.reasoningEffortMedium,
     high: () => t().prompt.reasoningEffortHigh,
+    xhigh: () => t().prompt.reasoningEffortXHigh,
     max: () => t().prompt.reasoningEffortMax,
     ultra: () => t().prompt.reasoningEffortUltra,
   };

@@ -596,7 +596,7 @@ describe("codex/converters.ts", () => {
     });
     expect(buffer.activeTurnId).toBe("turn-1");
     expect(buffer.modelId).toBe("gpt-5.4");
-    expect(buffer.reasoningEffort).toBe("max");
+    expect(buffer.reasoningEffort).toBe("xhigh");
     expect(buffer.engineMeta).toEqual({ codexThreadId: "thread-1", turnDiff: "@@ -1 +1 @@" });
 
     applyTurnUsage(buffer, {
