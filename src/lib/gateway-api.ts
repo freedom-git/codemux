@@ -297,7 +297,11 @@ class GatewayAPI {
       this.releasePendingSends();
       _setGatewayConnected(false);
       if (isDevTunnelLocation()) {
-        void probeTunnelAuth();
+        setTimeout(() => {
+          if (!this.connected) {
+            void probeTunnelAuth({ autoRedirect: !this.connected });
+          }
+        }, 1200);
       }
       this.handlers.onDisconnected?.(reason);
     });

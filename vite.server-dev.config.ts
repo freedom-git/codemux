@@ -8,6 +8,7 @@ export default defineConfig(mergeConfig(webConfig, defineConfig({
   plugins: [createAuthProxyPlugin({ defaultPort: WEB_PORT })],
   server: {
     hmr: false,
+    ws: false,
     host: true,
     port: WEB_PORT,
     strictPort: true,

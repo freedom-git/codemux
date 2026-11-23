@@ -374,9 +374,13 @@ describe("AgentHostService", () => {
     expect(created.connection).toMatchObject({ source: "VS Code", executor: "VS Code", available: true });
 
     // Wait across background listSessions polls while the new session is still idle-provisional
+    const catalogEventsDuringIdlePolls: unknown[] = [];
+    adapter.on("catalog.updated", (ev) => catalogEventsDuringIdlePolls.push(ev));
     const pollsBefore = server.requests.filter(r => r.method === "listSessions").length;
-    await expect.poll(() => server.requests.filter(r => r.method === "listSessions").length).toBeGreaterThan(pollsBefore + 1);
+    await expect.poll(() => server.requests.filter(r => r.method === "listSessions").length).toBeGreaterThan(pollsBefore + 2);
     expect((await adapter.getSession(created.id))?.connection?.available).toBe(true);
+    // Unchanged poll cycles must not spam redundant catalog.updated broadcasts
+    expect(catalogEventsDuringIdlePolls).toHaveLength(0);
 
     // Sending the first prompt routes directly to the newly created VS Code chat
     await adapter.sendMessage(created.id, [{ type: "text", text: "hello from CodeMux" }]);

@@ -4,7 +4,12 @@ import webConfig from "./vite.web.config";
 import type { IncomingMessage } from "http";
 import { remoteAccessManager } from "./scripts/remote-access-manager";
 import { createRemoteAccessPlugin } from "./scripts/remote-access-plugin";
-import { DEV_SW_CLEANUP_SCRIPT, preserveProxyRequestIdentity } from "./scripts/auth-proxy-plugin";
+import {
+  DEV_SW_CLEANUP_SCRIPT,
+  isViteClientModuleId,
+  patchViteClientCode,
+  preserveProxyRequestIdentity,
+} from "./scripts/auth-proxy-plugin";
 import { deviceStore } from "./scripts/device-store";
 import type { DeviceInfo } from "./shared/device-store-types";
 import { sendJson, parseBody, getClientIp, isLocalRequest, getLocalIp, requireAuth } from "./shared/http-utils";
@@ -36,6 +41,12 @@ export default mergeConfig(webConfig, defineConfig({
     createRemoteAccessPlugin(remoteAccessManager, () => remoteAccessManager.stop()),
     {
       name: "standalone-auth-api",
+      enforce: "post",
+      transform(code, id) {
+        if (!isViteClientModuleId(id)) return null;
+        const patched = patchViteClientCode(code, false);
+        return patched === code ? null : { code: patched, map: null };
+      },
       configureServer(server) {
         // Handle CORS preflight
         server.middlewares.use((req, res, next) => {

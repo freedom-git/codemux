@@ -149,10 +149,23 @@ export default function Chat() {
   const navigate = useNavigate();
   const emptyDraft = () => ({ text: "", images: [] as ImageAttachment[] });
   const [sessionSources, setSessionSources] = createSignal<SessionSourceState[]>([]);
-  const refreshSessionSources = (): Promise<void> =>
-    gateway.listSessionSources()
-      .then((sources) => { if (!disposed) setSessionSources(sources); })
-      .catch((error) => logger.warn("[SessionSources] Failed to refresh session sources:", error));
+  let sessionSourcesPromise: Promise<void> | undefined;
+  let lastSessionSourcesJson = "";
+  const refreshSessionSources = (): Promise<void> => {
+    if (sessionSourcesPromise) return sessionSourcesPromise;
+    sessionSourcesPromise = gateway.listSessionSources()
+      .then((sources) => {
+        if (disposed) return;
+        const nextJson = JSON.stringify(sources);
+        if (nextJson !== lastSessionSourcesJson) {
+          lastSessionSourcesJson = nextJson;
+          setSessionSources(sources);
+        }
+      })
+      .catch((error) => logger.warn("[SessionSources] Failed to refresh session sources:", error))
+      .finally(() => { sessionSourcesPromise = undefined; });
+    return sessionSourcesPromise;
+  };
 
   const removedSessionIds = new Set<string>();
   const handleCatalogUpdated = (catalog: Parameters<typeof applySessionCatalog>[0]) => {
@@ -1367,11 +1380,14 @@ export default function Chat() {
             notify(t().notification.gatewayDisconnected, "warning", 8000);
             return;
           }
-          void probeTunnelAuth().then((status) => {
-            if (!disposed && !untrack(wsConnected) && status === "ok" && !untrack(tunnelAuthRedirecting)) {
-              notify(untrack(t).notification.gatewayDisconnected, "warning", 8000);
-            }
-          });
+          setTimeout(() => {
+            if (disposed || untrack(wsConnected)) return;
+            void probeTunnelAuth({ autoRedirect: !untrack(wsConnected) }).then((status) => {
+              if (!disposed && !untrack(wsConnected) && status === "ok" && !untrack(tunnelAuthRedirecting)) {
+                notify(untrack(t).notification.gatewayDisconnected, "warning", 8000);
+              }
+            });
+          }, 1200);
         },
         onPartUpdated: handlePartUpdated,
         onPartsBatch: handlePartsBatch,

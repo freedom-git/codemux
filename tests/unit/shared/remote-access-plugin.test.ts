@@ -171,6 +171,56 @@ describe("createAuthProxyPlugin", () => {
     const script = await swRes.text();
     expect(script).toContain("self.skipWaiting()");
     expect(script).toContain("self.registration.unregister()");
+    expect(script).toContain("if (!deletedAnyCache && controlledClients.length === 0) return;");
+  });
+
+  it("strips vite-hmr WebSocket connection and tunnel disconnect reloads from /@vite/client when hmr is disabled", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "codemux-auth-proxy-vite-client-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "index.html"), "<!doctype html><html><body>SPA</body></html>");
+    const server = await createServer({
+      configFile: false,
+      root,
+      logLevel: "silent",
+      plugins: [createAuthProxyPlugin({ defaultPort: 8233 })],
+      server: { port: 0, host: "127.0.0.1", hmr: false, ws: false },
+    });
+    cleanup.push(() => server.close());
+    await server.listen();
+    const addr = server.httpServer?.address();
+    if (!addr || typeof addr === "string") throw new Error("Expected Vite TCP server.");
+
+    const clientRes = await fetch(`http://127.0.0.1:${addr.port}/@vite/client`);
+    expect(clientRes.status).toBe(200);
+    const clientCode = await clientRes.text();
+    expect(clientCode).not.toContain("transport.connect(createHMRHandler(handleMessage));");
+    expect(clientCode).toContain("codemux: hmr disabled");
+    expect(clientCode).toContain("globalThis.location?.hostname");
+    expect(clientCode).toContain("updateStyle");
+    expect(clientCode).toContain("removeStyle");
+  });
+
+  it("guards vite:ws:disconnect reload to loopback origins when hmr remains enabled", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "codemux-auth-proxy-vite-hmr-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "index.html"), "<!doctype html><html><body>SPA</body></html>");
+    const server = await createServer({
+      configFile: false,
+      root,
+      logLevel: "silent",
+      plugins: [createAuthProxyPlugin({ defaultPort: 8233 })],
+      server: { port: 0, host: "127.0.0.1" },
+    });
+    cleanup.push(() => server.close());
+    await server.listen();
+    const addr = server.httpServer?.address();
+    if (!addr || typeof addr === "string") throw new Error("Expected Vite TCP server.");
+
+    const clientRes = await fetch(`http://127.0.0.1:${addr.port}/@vite/client`);
+    expect(clientRes.status).toBe(200);
+    const clientCode = await clientRes.text();
+    expect(clientCode).toContain("transport.connect(createHMRHandler(handleMessage));");
+    expect(clientCode).toContain('payload.event === "vite:ws:disconnect" && /^(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|::1)$/i.test(globalThis.location?.hostname ?? "")');
   });
 });
 

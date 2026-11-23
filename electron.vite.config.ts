@@ -82,6 +82,7 @@ export default defineConfig(({ command }) => ({
     },
     server: {
       hmr: false,
+      ws: false,
       watch: { ignored: ['**/.codemux-dev/**'] },
       host: true,
       port: WEB_PORT,

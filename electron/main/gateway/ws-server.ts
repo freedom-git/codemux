@@ -139,7 +139,7 @@ export class GatewayServer {
       gatewayLog.error("WebSocket server error:", err);
     });
 
-    // Ping all clients every 30s to keep connections alive through proxies
+    // Ping all clients every 20s to stay safely below ~30s tunnel/NAT idle timeouts
     this.pingInterval = setInterval(() => {
       for (const client of this.clients.values()) {
         if (!this.isClientAccessAllowed(client)) continue;
@@ -148,7 +148,7 @@ export class GatewayServer {
           client.ws.ping();
         }
       }
-    }, 30_000);
+    }, 20_000);
 
     const addr = "port" in options ? `:${options.port}` : "(attached to HTTP server)";
     gatewayLog.info(`Started on ${addr}`);

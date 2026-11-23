@@ -65,6 +65,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   private initialRefreshDone = false;
   private configuredHosts = new WeakSet<AgentHostConnection>();
   private createdSessions = new Set<string>();
+  private publishedCatalogDigests = new Map<EngineType, string>();
 
   constructor(private readonly options: AgentHostServiceOptions = {}) { super(); this.enabled = options.enabled === true; }
   async start() { this.running = true; this.seed(); if (this.enabled) await this.refreshHosts(); else this.publishCatalog(); }
@@ -72,6 +73,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     this.running = false;
     this.initialRefreshDone = false;
     this.createdSessions.clear();
+    this.publishedCatalogDigests.clear();
     this.generation++;
     clearTimeout(this.timer);
     clearTimeout(this.publishing);
@@ -404,8 +406,24 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       this.questions.delete(key); this.emit("question.replied", { questionId: key, answers: [] });
     }
   }
-  private publishCatalog() { if (this.initialized) for (const engine of supportedEngines) this.emit("catalog.updated", this.catalog(engine)); }
-  private catalog(engineType: EngineType): EngineCatalogSnapshot {
+  private publishCatalog() {
+    if (!this.initialized) return;
+    for (const engine of supportedEngines) {
+      const { projects, sessions } = this.catalogEntries(engine);
+      const digest = JSON.stringify({ enabled: this.enabled, projects, sessions });
+      if (this.publishedCatalogDigests.get(engine) === digest) continue;
+      this.publishedCatalogDigests.set(engine, digest);
+      this.emit("catalog.updated", {
+        sourceId: agentHostCatalogId(engine),
+        engineType: engine,
+        revision: String(++this.revision),
+        complete: true,
+        projects,
+        sessions,
+      });
+    }
+  }
+  private catalogEntries(engineType: EngineType): Pick<EngineCatalogSnapshot, "projects" | "sessions"> {
     const sessions = [...this.entries.values()].filter(entry => entry.session.engineType === engineType).map(entry => ({
       ...entry.session, ...(!this.enabled || !entry.host?.connected ? { connection: { ...entry.session.connection, ...this.connection() }, activityStatus: "idle" as const } : {}),
     }));
@@ -413,6 +431,10 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       id: session.projectId!, directory: session.directory, roots: session.directory ? [session.directory] : [],
       name: session.directory ? `${basename(session.directory)} (VS Code)` : "VS Code",
     }])).values()];
+    return { projects, sessions };
+  }
+  private catalog(engineType: EngineType): EngineCatalogSnapshot {
+    const { projects, sessions } = this.catalogEntries(engineType);
     return { sourceId: agentHostCatalogId(engineType), engineType, revision: String(++this.revision), complete: true, projects, sessions };
   }
   async getCatalog(engineType: EngineType) { this.seed(); return this.catalog(engineType); }

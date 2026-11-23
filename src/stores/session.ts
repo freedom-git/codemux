@@ -170,18 +170,24 @@ export function applySessionCatalog(snapshot: EngineCatalogSnapshot): void {
   setSessionStore("catalogs", snapshot.sourceId, snapshot);
   const incoming = new Map(snapshot.sessions.filter((session) => !pendingRemovals.has(session.id)).map((session) => [session.id, toSessionInfo({ ...session, catalogSourceId: snapshot.sourceId })]));
   setSessionStore("list", (current) => {
+    let changed = false;
     const result = current.map((session) => {
       const next = incoming.get(session.id);
       if (next) {
         incoming.delete(session.id);
         const defined = Object.fromEntries(Object.entries(next).filter(([, value]) => value !== undefined));
-        return { ...session, ...defined };
+        const merged = { ...session, ...defined };
+        if (JSON.stringify(merged) === JSON.stringify(session)) return session;
+        changed = true;
+        return merged;
       }
-      if (snapshot.complete && session.catalogSourceId === snapshot.sourceId && session.catalogAvailable !== undefined) {
+      if (snapshot.complete && session.catalogSourceId === snapshot.sourceId && session.catalogAvailable !== undefined && session.catalogAvailable !== false) {
+        changed = true;
         return { ...session, catalogAvailable: false };
       }
       return session;
     });
+    if (!changed && incoming.size === 0) return current;
     return [...result, ...incoming.values()];
   });
 }

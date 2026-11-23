@@ -27,17 +27,20 @@ export const DEV_SW_CLEANUP_SCRIPT = `self.addEventListener("install", () => {
 });
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
+    const controlledClients = await self.clients.matchAll({ type: "window", includeUncontrolled: false });
+    let deletedAnyCache = false;
     try {
       const keys = await self.caches.keys();
-      await Promise.all(
-        keys
-          .filter((key) => key.startsWith("codemux-web-") || key.startsWith("workbox-"))
-          .map((key) => self.caches.delete(key)),
-      );
+      const staleKeys = keys.filter((key) => key.startsWith("codemux-web-") || key.startsWith("workbox-"));
+      deletedAnyCache = staleKeys.length > 0;
+      await Promise.all(staleKeys.map((key) => self.caches.delete(key)));
     } catch {}
     await self.registration.unregister();
-    const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    for (const client of clients) {
+    if (!deletedAnyCache && controlledClients.length === 0) return;
+    const targets = controlledClients.length > 0
+      ? controlledClients
+      : await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of targets) {
       try {
         await client.navigate(client.url);
       } catch {}
@@ -45,6 +48,38 @@ self.addEventListener("activate", (event) => {
   })());
 });
 `;
+
+const VITE_CLIENT_PATH_SUFFIX = "/vite/dist/client/client.mjs";
+
+export function isViteClientModuleId(id: string): boolean {
+  const normalized = id.replaceAll("\\", "/").split("?")[0];
+  return normalized === "/@vite/client" || normalized.endsWith(VITE_CLIENT_PATH_SUFFIX);
+}
+
+/**
+ * Vite 6 still injects `/@vite/client` and opens a `vite-hmr` WebSocket even
+ * when `server.hmr === false` (and when `server.ws === false`, `/@vite/client`
+ * logs failed WebSocket connection errors). Over Microsoft Dev Tunnels or
+ * mobile networks, idle `vite-hmr` sockets close every ~15-30s and trigger
+ * `vite:ws:disconnect` -> `waitForSuccessfulPing()` -> `location.reload()`,
+ * forcibly reloading the entire mobile page.
+ */
+export function patchViteClientCode(code: string, hmrDisabled: boolean): string {
+  let next = code;
+  if (hmrDisabled) {
+    next = next
+      .replace('console.debug("[vite] connecting...");', "")
+      .replace(
+        "transport.connect(createHMRHandler(handleMessage));",
+        "/* codemux: hmr disabled — skip vite-hmr websocket */",
+      );
+  }
+  next = next.replace(
+    'if (payload.event === "vite:ws:disconnect") {',
+    'if (payload.event === "vite:ws:disconnect" && /^(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|::1)$/i.test(globalThis.location?.hostname ?? "")) {',
+  );
+  return next;
+}
 
 const virtualInterfacePatterns = [
   /^docker/i, /^br-/i, /^veth/i, /^vEthernet/i,
@@ -185,9 +220,21 @@ export function preserveProxyRequestIdentity(proxyReq: http.ClientRequest, req: 
 
 export function createAuthProxyPlugin(options: AuthProxyPluginOptions = {}): Plugin {
   const { defaultPort = WEB_PORT } = options;
+  let hmrDisabled = false;
 
   return {
     name: "auth-api-proxy",
+    enforce: "post",
+
+    configResolved(config) {
+      hmrDisabled = config.server.hmr === false || config.server.ws === false;
+    },
+
+    transform(code, id) {
+      if (!isViteClientModuleId(id)) return null;
+      const patched = patchViteClientCode(code, hmrDisabled);
+      return patched === code ? null : { code: patched, map: null };
+    },
     configureServer(server: ViteDevServer) {
       server.middlewares.use(async (req, res, next) => {
         const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
