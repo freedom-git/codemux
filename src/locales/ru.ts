@@ -501,6 +501,8 @@ export const ru: LocaleDict = {
     activeSection: "Активные",
     pinSession: "Закрепить",
     unpinSession: "Открепить",
+    newLocalSession: "Новый локальный сеанс",
+    newPeerSession: "Новый сеанс {peer}",
   },
 
   // Project
@@ -552,8 +554,17 @@ export const ru: LocaleDict = {
   project: {
     add: "Добавить проект",
     addTitle: "Добавить проект",
-    inputPath: "Введите путь к проекту",
-    pathHint: "Введите абсолютный путь к git-репозиторию на сервере",
+    inputPath: "Путь к проекту",
+    pathHint: "Выберите папку из корневого каталога выше или введите путь вручную",
+    targetLabel: "Расположение сеанса",
+    targetLocal: "Локально (CodeMux)",
+    selectFolderTitle: "Выбор папки на сервере",
+    drivesRoot: "Диски",
+    homeDir: "Домой",
+    parentDir: "Вверх",
+    emptySubfolders: "Нет подпапок — выбрана текущая папка",
+    loadingFolders: "Загрузка папок...",
+    filterFolders: "Фильтр папок...",
     browse: "Обзор",
     browseNotSupported: "Выбор папок не поддерживается в этом браузере",
     adding: "Добавление проекта...",

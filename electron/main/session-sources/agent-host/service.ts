@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { basename } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, resolve as resolvePath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ChatState, ChatSummary, SessionState, ModelSelection, Message, ActionEnvelope,
 } from "@microsoft/agent-host-protocol";
@@ -15,7 +15,7 @@ import { agentHostEndpointKey, discoverAgentHosts, type AgentHostEndpoint } from
 import { AgentHostConnection, ROOT } from "./connection";
 import { activity, inputAnswers, nativeChatId, projectChat, projectInputs, scopedId, type PermissionRoute, type QuestionRoute, type TurnProjectionCache } from "./projection";
 import { SESSION_FLAGS, type Wire } from "./wire";
-import { providerEngine, supportedEngines, agentHostCatalogId } from "./providers";
+import { engineProvider, providerEngine, supportedEngines, agentHostCatalogId } from "./providers";
 
 function unifiedEffort(value: unknown): ReasoningEffort | undefined {
   return value === "xhigh" ? "max" : value === "max" ? "ultra"
@@ -64,12 +64,14 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   private initialized = false;
   private initialRefreshDone = false;
   private configuredHosts = new WeakSet<AgentHostConnection>();
+  private createdSessions = new Set<string>();
 
   constructor(private readonly options: AgentHostServiceOptions = {}) { super(); this.enabled = options.enabled === true; }
   async start() { this.running = true; this.seed(); if (this.enabled) await this.refreshHosts(); else this.publishCatalog(); }
   async stop() {
     this.running = false;
     this.initialRefreshDone = false;
+    this.createdSessions.clear();
     this.generation++;
     clearTimeout(this.timer);
     clearTimeout(this.publishing);
@@ -96,6 +98,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     const available = this.enabled && !syncingInitial && hosts.length > 0;
     const providers = [...new Set(hosts.flatMap(host => host.root?.agents.map(agent => agent.provider) ?? []))];
     return { id: "vscode", enabled: this.enabled, available, peerName: "VS Code", kind: "attach",
+      canCreateSession: available && providers.some(id => providerEngine(id) !== undefined),
       providers: providers.map(id => ({ id, engineType: providerEngine(id), supported: providerEngine(id) !== undefined })),
       status: !this.enabled ? "disabled" : syncingInitial ? "connecting" : available ? "connected" : this.refresh ? "connecting" : "unavailable" };
   }
@@ -191,6 +194,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
                   const session = host.sessions.get(summary.resource);
                   if (session && !isExternalCliSession(session)) {
                     seen.add(summary.resource);
+                    this.createdSessions.delete(summary.resource);
                     this.catalogSession(host, summary.resource, session);
                   }
                 } catch { /* One inaccessible session must not disconnect other providers. */ }
@@ -206,6 +210,11 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
               if (session && isExternalCliSession(session)) {
                 this.clearInputs(id);
                 this.entries.delete(id);
+                continue;
+              }
+              if (this.createdSessions.has(entry.sessionUri) && host.connected && session) {
+                seen.add(entry.sessionUri);
+                this.catalogSession(host, entry.sessionUri, session);
                 continue;
               }
               entry.host = undefined;
@@ -428,9 +437,74 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     if (writable && entry.session.connection?.readOnly) throw new Error("This VS Code chat is read-only.");
     return { entry, host, chat: host.chats.get(entry.chatUri)! };
   }
+  async createSession(engineType: EngineType | undefined, directory: string): Promise<UnifiedSession> {
+    if (!this.enabled) throw new Error("VS Code session sharing is disabled.");
+    this.seed();
+    let hosts = [...this.hosts.values()].filter(candidate => candidate.connected);
+    if (!hosts.length) {
+      await this.refreshHosts();
+      hosts = [...this.hosts.values()].filter(candidate => candidate.connected);
+    }
+    if (!hosts.length) throw new Error("VS Code is not connected. Open VS Code and enable sharing first.");
+
+    const preferredProvider = engineType ? engineProvider(engineType) : undefined;
+    let host: AgentHostConnection | undefined;
+    let provider: string | undefined;
+    if (preferredProvider) {
+      host = hosts.find(candidate => candidate.root?.agents.some(agent => agent.provider === preferredProvider));
+      if (host) provider = preferredProvider;
+    }
+    if (!host || !provider) {
+      for (const candidate of hosts) {
+        const supported = candidate.root?.agents.find(agent => providerEngine(agent.provider) !== undefined);
+        if (supported) {
+          host = candidate;
+          provider = supported.provider;
+          break;
+        }
+      }
+    }
+    if (!host || !provider) throw new Error("No supported AI provider is available in VS Code.");
+
+    const trimmedDir = directory?.trim();
+    const workingDirectories = trimmedDir && trimmedDir !== "."
+      ? [pathToFileURL(resolvePath(trimmedDir)).href]
+      : undefined;
+    const sessionUri = `ahp-session:/${randomUUID()}`;
+    await host.request("createSession", {
+      channel: sessionUri,
+      provider,
+      ...(workingDirectories ? { workingDirectories } : {}),
+    });
+    this.createdSessions.add(sessionUri);
+    await host.subscribe(sessionUri);
+    const session = host.sessions.get(sessionUri);
+    const chatUri = session?.defaultChat ?? session?.chats?.[0]?.resource;
+    if (!session || !chatUri) {
+      this.createdSessions.delete(sessionUri);
+      throw new Error("VS Code did not initialize a default chat for the new session.");
+    }
+    this.catalogSession(host, sessionUri, session);
+    const id = nativeChatId(host.endpoint.source, chatUri);
+    const entry = this.entries.get(id);
+    if (!entry) {
+      this.createdSessions.delete(sessionUri);
+      throw new Error("The newly created VS Code chat could not be registered.");
+    }
+    await host.subscribe(chatUri);
+    entry.attached = true;
+    this.publishChat(entry);
+    this.publishCatalog();
+    return entry.session;
+  }
   async restoreSession(id: string) { return (await this.attach(id)).entry.session; }
   async getSession(id: string) { return this.entries.get(id)?.session ?? null; }
-  async deleteSession(id: string) { this.clearInputs(id); this.entries.delete(id); }
+  async deleteSession(id: string) {
+    const entry = this.entries.get(id);
+    if (entry) this.createdSessions.delete(entry.sessionUri);
+    this.clearInputs(id);
+    this.entries.delete(id);
+  }
   async removeSession(id: string): Promise<"local"> { await this.deleteSession(id); return "local"; }
   async listMessages(id: string): Promise<UnifiedMessage[]> {
     const { entry, host } = await this.attach(id);

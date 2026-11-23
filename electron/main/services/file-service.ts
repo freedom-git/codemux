@@ -1,10 +1,13 @@
 import { readdir, readFile as fsReadFile, stat } from "node:fs/promises";
 import { realpathSync, createReadStream } from "node:fs";
+import { homedir } from "node:os";
 import {
   join,
   sep,
   extname,
   basename,
+  dirname,
+  parse as parsePath,
   resolve as resolvePath,
   isAbsolute as isAbsolutePath,
 } from "node:path";
@@ -12,6 +15,9 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import type * as ParcelWatcher from "@parcel/watcher";
 import type {
+  DirectoryBrowseBreadcrumb,
+  DirectoryBrowseEntry,
+  DirectoryBrowseResult,
   FileExplorerNode,
   FileExplorerContent,
   GitFileStatus,
@@ -25,6 +31,16 @@ export type { GitFileStatus };
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const SKIP_ENTRIES = new Set([".git", ".DS_Store", "Thumbs.db"]);
+
+const WIN_SYSTEM_DIRS = new Set([
+  "$recycle.bin",
+  "system volume information",
+  "$winreagent",
+  "config.msi",
+  "documents and settings",
+  "recovery",
+  "perflogs",
+]);
 
 const DIMMED_DIRS = new Set([
   "node_modules",
@@ -311,6 +327,134 @@ export async function listDirectory(directory: string, workspaceDir?: string): P
   });
 
   return nodes;
+}
+
+/**
+ * Browse server directories starting from top-level roots (drive letters on
+ * Windows, `/` on Linux/macOS) down through nested subdirectories.
+ */
+export async function browseDirectories(requestedPath?: string): Promise<DirectoryBrowseResult> {
+  const isWindows = process.platform === "win32";
+  const homePath = homedir();
+  const trimmed = requestedPath?.trim() ?? "";
+
+  if (isWindows && !trimmed) {
+    const letters = Array.from({ length: 26 }, (_, idx) => String.fromCharCode(65 + idx));
+    const drives = (
+      await Promise.all(
+        letters.map(async (letter): Promise<DirectoryBrowseEntry | null> => {
+          const drivePath = `${letter}:\\`;
+          try {
+            const info = await stat(drivePath);
+            return info.isDirectory()
+              ? { name: drivePath, path: drivePath, kind: "drive" }
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter((entry): entry is DirectoryBrowseEntry => entry !== null);
+
+    return {
+      currentPath: "",
+      parentPath: null,
+      homePath,
+      hasDriveRoot: true,
+      breadcrumbs: [],
+      entries: drives,
+    };
+  }
+
+  let normalizedInput = trimmed || "/";
+  if (isWindows && /^[A-Za-z]:$/.test(normalizedInput)) {
+    normalizedInput = `${normalizedInput}\\`;
+  }
+  const resolved = resolvePath(normalizedInput);
+  const dirStat = await stat(resolved);
+  if (!dirStat.isDirectory()) {
+    throw Object.assign(new Error(`Not a directory: ${resolved}`), { code: "NOT_DIRECTORY" });
+  }
+
+  const rawEntries = await readdir(resolved, { withFileTypes: true });
+  const dirCandidates = (
+    await Promise.all(
+      rawEntries.map(async (entry): Promise<DirectoryBrowseEntry | null> => {
+        const name = entry.name;
+        if (SKIP_ENTRIES.has(name)) return null;
+        if (isWindows && WIN_SYSTEM_DIRS.has(name.toLowerCase())) return null;
+
+        const fullPath = join(resolved, name);
+        let isDir = entry.isDirectory();
+        if (!isDir && entry.isSymbolicLink()) {
+          isDir = await stat(fullPath).then((s) => s.isDirectory()).catch(() => false);
+        }
+        if (!isDir) return null;
+
+        const dimmed = DIMMED_DIRS.has(name) || name.startsWith(".");
+        return {
+          name,
+          path: fullPath,
+          kind: "directory",
+          ...(dimmed ? { dimmed: true } : {}),
+        };
+      }),
+    )
+  ).filter((entry): entry is DirectoryBrowseEntry => entry !== null);
+
+  dirCandidates.sort((a, b) => {
+    const aDim = a.dimmed ? 1 : 0;
+    const bDim = b.dimmed ? 1 : 0;
+    if (aDim !== bDim) return aDim - bDim;
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  });
+
+  const entries = dirCandidates.slice(0, MAX_DIR_ENTRIES);
+
+  // Detect Git repositories among visible non-dimmed directories for UI badges
+  let gitChecks = 0;
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (entry.dimmed || gitChecks >= 120) return;
+      gitChecks++;
+      const hasGit = await stat(join(entry.path, ".git")).then(() => true).catch(() => false);
+      if (hasGit) entry.isGitRepo = true;
+    }),
+  );
+
+  const parsed = parsePath(resolved);
+  const root = parsed.root || (isWindows ? `${resolved.slice(0, 2)}\\` : "/");
+  const isAtRoot = resolved === root;
+  const parentPath = isAtRoot ? (isWindows ? "" : null) : dirname(resolved);
+
+  const breadcrumbs: DirectoryBrowseBreadcrumb[] = [];
+  if (isWindows) {
+    const driveLabel = root.replace(/[\\/]+$/, "");
+    breadcrumbs.push({ label: driveLabel, path: root });
+    const rest = resolved.slice(root.length).split(/[\\/]+/).filter(Boolean);
+    let acc = root;
+    for (const seg of rest) {
+      acc = join(acc, seg);
+      breadcrumbs.push({ label: seg, path: acc });
+    }
+  } else {
+    breadcrumbs.push({ label: "/", path: "/" });
+    const rest = resolved.slice(root.length).split("/").filter(Boolean);
+    let acc = "/";
+    for (const seg of rest) {
+      acc = join(acc, seg);
+      breadcrumbs.push({ label: seg, path: acc });
+    }
+  }
+
+  return {
+    currentPath: resolved,
+    parentPath,
+    homePath,
+    hasDriveRoot: isWindows,
+    breadcrumbs,
+    entries,
+  };
 }
 
 export async function readFile(

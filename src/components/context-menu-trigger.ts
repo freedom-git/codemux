@@ -91,7 +91,15 @@ export function createContextMenuTrigger(
       clearTimer();
       e.preventDefault();
       e.stopPropagation();
-      openMenu({ x: e.clientX, y: e.clientY, title: menu.title, items: visibleItems });
+      let x = e.clientX;
+      let y = e.clientY;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || (x === 0 && y === 0)) {
+        const el = e.currentTarget instanceof Element ? e.currentTarget : (e.target instanceof Element ? e.target : null);
+        const rect = el?.getBoundingClientRect();
+        x = rect ? rect.left + 16 : 16;
+        y = rect ? rect.bottom : 16;
+      }
+      openMenu({ x, y, title: menu.title, items: visibleItems });
     },
     onTouchStart(e: TouchEvent) {
       clearTimer();

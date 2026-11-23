@@ -16,6 +16,36 @@ import type { RemoteAccessStatus } from "../shared/remote-access";
 
 // Electron's internal Auth API server port (imported from shared/ports)
 
+/**
+ * Self-unregistering Service Worker served at `/sw.js` in Vite dev mode.
+ * If a browser/phone previously visited the same origin/tunnel while running a
+ * packaged build, Workbox's precache SW would otherwise stay stuck forever
+ * because Vite's SPA fallback returns `text/html` for `/sw.js`.
+ */
+export const DEV_SW_CLEANUP_SCRIPT = `self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    try {
+      const keys = await self.caches.keys();
+      await Promise.all(
+        keys
+          .filter((key) => key.startsWith("codemux-web-") || key.startsWith("workbox-"))
+          .map((key) => self.caches.delete(key)),
+      );
+    } catch {}
+    await self.registration.unregister();
+    const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of clients) {
+      try {
+        await client.navigate(client.url);
+      } catch {}
+    }
+  })());
+});
+`;
+
 const virtualInterfacePatterns = [
   /^docker/i, /^br-/i, /^veth/i, /^vEthernet/i,
   /^vmnet/i, /^VMware/i, /^VirtualBox/i, /^vboxnet/i,
@@ -230,6 +260,22 @@ export function createAuthProxyPlugin(options: AuthProxyPluginOptions = {}): Plu
 
         const isLocal = isLocalRequest(req);
         sendJson(res, { isLocal });
+      });
+
+      // ====================================================================
+      // Dev-mode PWA Service Worker eviction
+      // GET /sw.js
+      // ====================================================================
+      server.middlewares.use((req, res, next) => {
+        const pathname = req.url?.split("?")[0];
+        if (pathname !== "/sw.js" || (req.method !== "GET" && req.method !== "HEAD")) {
+          next();
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        res.end(req.method === "HEAD" ? undefined : DEV_SW_CLEANUP_SCRIPT);
       });
 
     },

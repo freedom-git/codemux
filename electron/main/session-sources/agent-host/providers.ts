@@ -12,5 +12,12 @@ export function providerEngine(provider: string): EngineType | undefined {
   return providers.get(provider);
 }
 
+export function engineProvider(engine: EngineType): string | undefined {
+  for (const [provider, mapped] of providers) {
+    if (mapped === engine) return provider;
+  }
+  return undefined;
+}
+
 export const supportedEngines = [...providers.values()];
 export const agentHostCatalogId = (engine: EngineType) => `${engine}:vscode-local:v1`;

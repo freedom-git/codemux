@@ -72,6 +72,7 @@ import type {
   ImageAttachment,
   ReasoningEffort,
   SessionActivityStatus,
+  SessionSourceState,
   EngineCommand,
   ScheduledTask,
   ScheduledTaskCreateRequest,
@@ -147,14 +148,22 @@ export default function Chat() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const emptyDraft = () => ({ text: "", images: [] as ImageAttachment[] });
+  const [sessionSources, setSessionSources] = createSignal<SessionSourceState[]>([]);
+  const refreshSessionSources = (): Promise<void> =>
+    gateway.listSessionSources()
+      .then((sources) => { if (!disposed) setSessionSources(sources); })
+      .catch((error) => logger.warn("[SessionSources] Failed to refresh session sources:", error));
+
   const removedSessionIds = new Set<string>();
   const handleCatalogUpdated = (catalog: Parameters<typeof applySessionCatalog>[0]) => {
     // A fresh gateway catalog may restore an explicitly re-imported native chat.
     for (const session of catalog.sessions) removedSessionIds.delete(session.id);
     applySessionCatalog(catalog);
+    void refreshSessionSources();
   };
   let catalogRefresh: Promise<void> | undefined;
   const refreshSessionCatalogs = (): Promise<void> => {
+    void refreshSessionSources();
     if (catalogRefresh) return catalogRefresh;
     catalogRefresh = gateway.listCatalogs()
       .then((catalogs) => { for (const catalog of catalogs) handleCatalogUpdated(catalog); })
@@ -722,7 +731,7 @@ export default function Chat() {
 
   // Track if this is a local access (Electron or localhost web)
   const [isLocalAccess, setIsLocalAccess] = createSignal(isElectron());
-  const [canAddProject, setCanAddProject] = createSignal(isElectron());
+  const [canAddProject] = createSignal(true);
 
   const handleLogout = () => {
     if (!isElectron()) gateway.destroy();
@@ -1299,9 +1308,7 @@ export default function Chat() {
       if (!isElectron()) {
         const localAccess = await Auth.isLocalAccess();
         if (disposed || gen !== initGeneration || tunnelAuthRedirecting()) return;
-        const serverMode = getSetting<boolean>("serverMode") === true;
         setIsLocalAccess(localAccess);
-        setCanAddProject(localAccess || serverMode);
       }
 
       const isValidToken = await Auth.checkDeviceToken();
@@ -1756,23 +1763,54 @@ export default function Chat() {
   };
 
   // New session
-  const handleNewSession = async (directory?: string, explicitEngineType?: EngineType, worktreeId?: string) => {
-    logger.debug("[NewSession] Creating new session in directory:", directory, "engineType:", explicitEngineType, "worktreeId:", worktreeId);
+  const handleNewSession = async (
+    directory?: string,
+    explicitEngineType?: EngineType,
+    worktreeId?: string,
+    sourceId?: string,
+  ) => {
+    logger.debug("[NewSession] Creating new session in directory:", directory, "engineType:", explicitEngineType, "worktreeId:", worktreeId, "sourceId:", sourceId);
     // Use explicitly-passed engineType when available, otherwise use global default engine.
     const engineType = explicitEngineType || getDefaultEngineType();
-    const catalogNew = configStore.engines.find((engine) => engine.type === engineType)?.capabilities?.sessionCatalog === true;
+    const catalogNew = Boolean(sourceId) || configStore.engines.find((engine) => engine.type === engineType)?.capabilities?.sessionCatalog === true;
     if (catalogNew && newSessionPending()) return;
     if (catalogNew) setNewSessionPending(true);
 
     try {
       const defaultProject = sessionStore.projects.find(p => p.isDefault && !p.catalogSourceId);
       const dir = directory || defaultProject?.directory || sessionStore.projects.find((project) => !project.catalogSourceId)?.directory || ".";
-      const newSession = await gateway.createSession(engineType, dir, worktreeId);
+      const newSession = await gateway.createSession(engineType, dir, worktreeId, undefined, sourceId);
       logger.debug("[NewSession] Created:", newSession);
+      const actualEngineType = (newSession.engineType || engineType) as EngineType;
+      if (newSession.catalogSourceId) {
+        await refreshSessionCatalogs();
+      }
 
       // Match project by directory (projects are engine-agnostic now).
-      const project = sessionStore.projects.find(p => p.directory === dir);
-      const projectID = project?.id || undefined;
+      let project = newSession.catalogSourceId
+        ? undefined
+        : sessionStore.projects.find(p => !p.catalogSourceId && p.directory === dir);
+      if (!project && !newSession.catalogSourceId && dir && dir !== ".") {
+        try {
+          const projects = await gateway.listProjects(actualEngineType);
+          project = projects.find((p: UnifiedProject) => p.directory === dir);
+        } catch {
+          // Fallback to synthetic project entry below
+        }
+        if (!project) {
+          const normalizedDir = dir.replaceAll("\\", "/");
+          const dirName = dir.split(/[/\\]/).filter(Boolean).pop() || dir;
+          project = {
+            id: newSession.projectId || `dir-${normalizedDir}`,
+            directory: dir,
+            name: dirName,
+          };
+        }
+        if (project && !sessionStore.projects.some(p => p.id === project!.id)) {
+          setSessionStore("projects", (ps) => [...ps, project!]);
+        }
+      }
+      const projectID = newSession.projectId || project?.id || undefined;
       const processedSession = toSessionInfo(newSession, projectID);
 
       const existingSession = sessionStore.list.find(s => s.id === processedSession.id);
@@ -1794,7 +1832,7 @@ export default function Chat() {
       setSessionStore("initError", null);
       setOrchestratorView("dashboard");
       if (processedSession.projectID) setSessionStore("projectExpanded", processedSession.projectID, true);
-      setConfigStore("currentEngineType", engineType as import("../types/unified").EngineType);
+      setConfigStore("currentEngineType", actualEngineType);
       saveSetting("lastSessionId", processedSession.id);
       if (isMobile()) {
         setIsSidebarOpen(false);
@@ -1808,15 +1846,17 @@ export default function Chat() {
       }, 100);
 
       // Refresh engine capabilities (Copilot/Claude populate modes only after createSession)
-      try {
-        const engines = await gateway.listEngines();
-        setConfigStore("engines", engines);
+      if (!newSession.connection?.authoritative) {
+        try {
+          const engines = await gateway.listEngines();
+          setConfigStore("engines", engines);
 
-        const engineInfo = engines.find(e => e.type === engineType);
-        const availableModes = engineInfo?.capabilities?.availableModes;
-        await persistNewSessionDefaults(processedSession.id, engineType as EngineType, availableModes);
-      } catch {
-        // Non-critical: mode list may be stale but won't block
+          const engineInfo = engines.find(e => e.type === actualEngineType);
+          const availableModes = engineInfo?.capabilities?.availableModes;
+          await persistNewSessionDefaults(processedSession.id, actualEngineType, availableModes);
+        } catch {
+          // Non-critical: mode list may be stale but won't block
+        }
       }
     } catch (error) {
       logger.error("[NewSession] Failed to create session:", error);
@@ -2203,40 +2243,46 @@ export default function Chat() {
     }
   };
 
-  const handleAddProject = async (directory: string) => {
+  const handleAddProject = async (directory: string, sourceId?: string) => {
     if (!canAddProject()) {
       throw new Error(t().project.addNotAvailable);
     }
 
     const resolvedEngineType = getDefaultEngineType() as EngineType;
-    logger.debug("[AddProject] Initializing project for directory:", directory);
+    logger.debug("[AddProject] Initializing project for directory:", directory, "sourceId:", sourceId);
 
     try {
       // Creating a session in the directory will trigger project initialization
-      const newSession = await gateway.createSession(resolvedEngineType, directory);
+      const newSession = await gateway.createSession(resolvedEngineType, directory, undefined, undefined, sourceId);
       logger.debug("[AddProject] Session created:", newSession);
+      const actualEngineType = (newSession.engineType || resolvedEngineType) as EngineType;
 
-      // Refresh projects list
-      const projects = await gateway.listProjects(resolvedEngineType);
-      let project = projects.find((p: UnifiedProject) => p.directory === directory);
+      let project: UnifiedProject | undefined;
+      if (newSession.catalogSourceId) {
+        await refreshSessionCatalogs();
+      } else {
+        // Refresh projects list
+        const projects = await gateway.listProjects(actualEngineType);
+        project = projects.find((p: UnifiedProject) => p.directory === directory);
 
-      // For engines that don't support listing projects,
-      // construct a project entry from the session info
-      if (!project && newSession) {
-        const normalizedDir = directory.replaceAll("\\", "/");
-        const projectID = newSession.projectId || `dir-${normalizedDir}`;
-        const dirName = directory.split(/[/\\]/).filter(Boolean).pop() || directory;
-        project = {
-          id: projectID,
-          directory,
-          name: dirName,
-        };
-      }
+        // For engines that don't support listing projects,
+        // construct a project entry from the session info
+        if (!project && newSession) {
+          const normalizedDir = directory.replaceAll("\\", "/");
+          const projectID = newSession.projectId || `dir-${normalizedDir}`;
+          const dirName = directory.split(/[/\\]/).filter(Boolean).pop() || directory;
+          project = {
+            id: projectID,
+            directory,
+            name: dirName,
+          };
+        }
 
-      if (project) {
-        const existingProject = sessionStore.projects.find(p => p.id === project!.id);
-        if (!existingProject) {
-          setSessionStore("projects", (ps) => [...ps, project!]);
+        if (project) {
+          const existingProject = sessionStore.projects.find(p => p.id === project!.id);
+          if (!existingProject) {
+            setSessionStore("projects", (ps) => [...ps, project!]);
+          }
         }
       }
 
@@ -3297,6 +3343,7 @@ export default function Chat() {
               onSelectSession={handleSelectSession}
               onNewSession={handleNewSession}
               newSessionPending={newSessionPending()}
+              sessionSources={sessionSources()}
               onDeleteSession={handleDeleteSession}
               onRenameSession={handleRenameSession}
               onDeleteProjectSessions={(projectID, projectName) =>
@@ -3304,6 +3351,7 @@ export default function Chat() {
               }
               onAddProject={() => {
                 if (!canAddProject()) return;
+                void refreshSessionSources();
                 setShowAddProjectModal(true);
               }}
               onRefreshSessions={handleRefreshSessions}
@@ -3815,6 +3863,7 @@ export default function Chat() {
 
       <AddProjectModal
         isOpen={showAddProjectModal()}
+        sessionSources={sessionSources()}
         onClose={() => setShowAddProjectModal(false)}
         onAdd={handleAddProject}
       />

@@ -33,6 +33,7 @@ import type {
   SessionImportProgress,
   FileExplorerNode,
   FileExplorerContent,
+  DirectoryBrowseResult,
   GitFileStatus,
   EngineCommand,
   CommandInvokeResult,
@@ -475,8 +476,15 @@ class GatewayAPI {
     directory: string,
     worktreeId?: string,
     projectId?: string | null,
+    sourceId?: string,
   ): Promise<UnifiedSession> {
-    return gatewayClient.createSession({ engineType, directory, worktreeId, ...(projectId !== undefined ? { projectId } : {}) });
+    return gatewayClient.createSession({
+      engineType,
+      directory,
+      worktreeId,
+      ...(projectId !== undefined ? { projectId } : {}),
+      ...(sourceId !== undefined ? { sourceId } : {}),
+    });
   }
 
   setSessionProject(sessionId: string, projectId: string | null): Promise<void> {
@@ -786,6 +794,10 @@ class GatewayAPI {
 
   readFile(path: string, directory: string): Promise<FileExplorerContent> {
     return gatewayClient.readFile(path, directory);
+  }
+
+  browseDirectories(directory?: string): Promise<DirectoryBrowseResult> {
+    return gatewayClient.browseDirectories(directory);
   }
 
   getGitStatus(directory: string): Promise<GitFileStatus[]> {

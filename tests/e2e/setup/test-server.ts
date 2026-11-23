@@ -293,6 +293,7 @@ export async function startTestServer(
           ...existing,
           enabled: p.enabled,
           available: p.enabled,
+          canCreateSession: p.enabled,
           status: p.enabled ? "connected" : "disabled",
         };
         const idx = config!.sessionSources!.findIndex(s => s.id === p.sourceId);
@@ -337,15 +338,29 @@ export async function startTestServer(
 
       case GatewayRequestType.SESSION_CREATE: {
         const req = p as SessionCreateRequest;
-        const adapter = adapters.get(req.engineType);
+        const engineType = req.engineType ?? "opencode";
+        const adapter = adapters.get(engineType);
         if (!adapter) {
           throw Object.assign(
-            new Error(`Unknown engine type: ${req.engineType}`),
+            new Error(`Unknown engine type: ${engineType}`),
             { code: "ENGINE_NOT_FOUND" },
           );
         }
         const session = await adapter.createSession(req.directory);
-        sessionEngineMap.set(session.id, req.engineType);
+        if (req.sourceId) {
+          const source = config?.sessionSources?.find(s => s.id === req.sourceId);
+          const peerName = source?.peerName ?? req.sourceId;
+          session.connection = {
+            source: peerName,
+            executor: peerName,
+            shared: true,
+            authoritative: true,
+            localRemovalOnly: true,
+            available: true,
+          };
+          broadcast({ type: GatewayNotificationType.SESSION_UPDATED, payload: { session } });
+        }
+        sessionEngineMap.set(session.id, engineType);
         return session;
       }
 
@@ -568,6 +583,64 @@ export async function startTestServer(
           { name: "tsconfig.json", path: "tsconfig.json", absolutePath: `${p.directory}/tsconfig.json`, type: "file", ignored: false, size: 512 },
           { name: "README.md", path: "README.md", absolutePath: `${p.directory}/README.md`, type: "file", ignored: false, size: 4096 },
         ];
+      }
+
+      case GatewayRequestType.FILE_BROWSE_DIRS: {
+        const dir = typeof p?.directory === "string" ? p.directory.trim() : "";
+        if (!dir) {
+          return {
+            currentPath: "",
+            parentPath: null,
+            homePath: "/home/tester",
+            hasDriveRoot: true,
+            breadcrumbs: [],
+            entries: [
+              { name: "C:\\", path: "C:\\", kind: "drive" },
+              { name: "Q:\\", path: "Q:\\", kind: "drive" },
+            ],
+          };
+        }
+        if (dir === "Q:\\") {
+          return {
+            currentPath: "Q:\\",
+            parentPath: "",
+            homePath: "/home/tester",
+            hasDriveRoot: true,
+            breadcrumbs: [{ label: "Q:", path: "Q:\\" }],
+            entries: [
+              { name: "Projects", path: "Q:\\Projects", kind: "directory" },
+              { name: "Repos", path: "Q:\\Repos", kind: "directory" },
+            ],
+          };
+        }
+        if (dir === "Q:\\Projects") {
+          return {
+            currentPath: "Q:\\Projects",
+            parentPath: "Q:\\",
+            homePath: "/home/tester",
+            hasDriveRoot: true,
+            breadcrumbs: [
+              { label: "Q:", path: "Q:\\" },
+              { label: "Projects", path: "Q:\\Projects" },
+            ],
+            entries: [
+              { name: "codemux", path: "Q:\\Projects\\codemux", kind: "directory", isGitRepo: true },
+              { name: "architecture-lab", path: "Q:\\Projects\\architecture-lab", kind: "directory", isGitRepo: true },
+            ],
+          };
+        }
+        return {
+          currentPath: dir,
+          parentPath: "Q:\\Projects",
+          homePath: "/home/tester",
+          hasDriveRoot: true,
+          breadcrumbs: [
+            { label: "Q:", path: "Q:\\" },
+            { label: "Projects", path: "Q:\\Projects" },
+            { label: dir.split(/[\\/]/).pop() || dir, path: dir },
+          ],
+          entries: [],
+        };
       }
 
       case GatewayRequestType.FILE_READ: {

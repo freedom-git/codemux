@@ -493,6 +493,8 @@ export interface LocaleDict {
     activeSection: string;
     pinSession: string;
     unpinSession: string;
+    newLocalSession: string;
+    newPeerSession: string;
   };
 
   sessionSharing: {
@@ -546,6 +548,15 @@ export interface LocaleDict {
     addTitle: string;
     inputPath: string;
     pathHint: string;
+    targetLabel: string;
+    targetLocal: string;
+    selectFolderTitle: string;
+    drivesRoot: string;
+    homeDir: string;
+    parentDir: string;
+    emptySubfolders: string;
+    loadingFolders: string;
+    filterFolders: string;
     browse: string;
     browseNotSupported: string;
     adding: string;
@@ -1600,6 +1611,8 @@ export const en: LocaleDict = {
     activeSection: "Active",
     pinSession: "Pin to Active",
     unpinSession: "Unpin",
+    newLocalSession: "New Local Session",
+    newPeerSession: "New {peer} Session",
   },
 
   sessionSharing: {
@@ -1651,8 +1664,17 @@ export const en: LocaleDict = {
   project: {
     add: "Add Project",
     addTitle: "Add Project",
-    inputPath: "Enter project path",
-    pathHint: "Enter an absolute path to a git repository on the server",
+    inputPath: "Project path",
+    pathHint: "Tap folders above to browse from the root, or enter a path directly",
+    targetLabel: "Session location",
+    targetLocal: "Local (CodeMux)",
+    selectFolderTitle: "Select folder on server",
+    drivesRoot: "Drives",
+    homeDir: "Home",
+    parentDir: "Up",
+    emptySubfolders: "No subfolders — current folder selected",
+    loadingFolders: "Loading folders...",
+    filterFolders: "Filter folders...",
     browse: "Browse",
     browseNotSupported: "Folder selection not supported in this browser",
     adding: "Adding project...",

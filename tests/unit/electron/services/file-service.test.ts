@@ -740,3 +740,54 @@ describe("fileExists", () => {
     expect(second.exists).toBe(true);
   });
 });
+
+import { browseDirectories } from "../../../../electron/main/services/file-service";
+
+describe("browseDirectories", () => {
+  const BROWSE_DIR = join(tmpdir(), `codemux-browse-dirs-${Date.now()}`);
+
+  beforeAll(() => {
+    mkdirSync(join(BROWSE_DIR, "alpha-repo", ".git"), { recursive: true });
+    mkdirSync(join(BROWSE_DIR, "beta-folder"), { recursive: true });
+    mkdirSync(join(BROWSE_DIR, ".hidden-dir"), { recursive: true });
+    mkdirSync(join(BROWSE_DIR, "node_modules"), { recursive: true });
+    writeFileSync(join(BROWSE_DIR, "readme.md"), "not a directory");
+  });
+
+  afterAll(() => {
+    rmSync(BROWSE_DIR, { recursive: true, force: true });
+  });
+
+  it("lists top-level roots when no path is provided", async () => {
+    const res = await browseDirectories();
+    expect(res.entries.length).toBeGreaterThan(0);
+    if (process.platform === "win32") {
+      expect(res.hasDriveRoot).toBe(true);
+      expect(res.currentPath).toBe("");
+      expect(res.parentPath).toBeNull();
+      expect(res.entries.every((e) => e.kind === "drive" && /^[A-Z]:\\$/.test(e.path))).toBe(true);
+    } else {
+      expect(res.hasDriveRoot).toBe(false);
+      expect(res.currentPath).toBe("/");
+      expect(res.parentPath).toBeNull();
+    }
+  });
+
+  it("lists subdirectories only, marks git repos, and sorts regular folders before dimmed ones", async () => {
+    const res = await browseDirectories(BROWSE_DIR);
+    expect(res.currentPath).toBe(BROWSE_DIR);
+    expect(res.parentPath).toBeTruthy();
+    expect(res.breadcrumbs.length).toBeGreaterThan(0);
+    expect(res.entries.map((e) => e.name)).toEqual([
+      "alpha-repo",
+      "beta-folder",
+      ".hidden-dir",
+      "node_modules",
+    ]);
+    expect(res.entries[0].isGitRepo).toBe(true);
+    expect(res.entries[1].isGitRepo).toBeUndefined();
+    expect(res.entries[2].dimmed).toBe(true);
+    expect(res.entries[3].dimmed).toBe(true);
+  });
+});
+

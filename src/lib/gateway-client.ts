@@ -40,6 +40,7 @@ import {
   type SessionImportProgress,
   type FileExplorerNode,
   type FileExplorerContent,
+  type DirectoryBrowseResult,
   type GitFileStatus,
   type EngineCommand,
   type CommandInvokeResult,
@@ -831,6 +832,10 @@ export class GatewayClient {
 
   listFiles(directory: string, rootDirectory: string): Promise<FileExplorerNode[]> {
     return this.request(GatewayRequestType.FILE_LIST, { directory, rootDirectory });
+  }
+
+  browseDirectories(directory?: string): Promise<DirectoryBrowseResult> {
+    return this.request(GatewayRequestType.FILE_BROWSE_DIRS, directory ? { directory } : {});
   }
 
   readFile(path: string, directory: string): Promise<FileExplorerContent> {

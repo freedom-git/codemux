@@ -89,10 +89,38 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
           .filter(([, state]) => {
             const meta = state._meta as Record<string, unknown> | undefined;
             const isExt = meta?.["vscode.external"] === true && meta?.["ehcliAdoptable"] !== true;
-            return !isExt || rootConfig?.values?.showExternalSessions !== "none";
+            if (isExt && rootConfig?.values?.showExternalSessions === "none") return false;
+            const defChat = state.defaultChat ? extraChats.get(state.defaultChat) : undefined;
+            const isIdleProvisional = state.lifecycle === "creating" && !defChat?.activeTurn && (defChat?.turns.length ?? 0) === 0;
+            return !isIdleProvisional;
           })
           .map(([resource, state]) => ({ resource, ...state })),
       ] });
+      else if (method === "createSession") {
+        const createdUri = String(params.channel);
+        const createdChatUri = createdUri.replace("ahp-session:", "ahp-chat:");
+        const createdProvider = typeof params.provider === "string" ? params.provider : provider;
+        const workingDirectories = Array.isArray(params.workingDirectories) ? params.workingDirectories as string[] : undefined;
+        extraChats.set(createdChatUri, {
+          resource: createdChatUri,
+          title: "New chat",
+          status: 1,
+          modifiedAt: now,
+          turns: [],
+          ...(workingDirectories ? { workingDirectories } : {}),
+        } as ChatState);
+        extraSessions.set(createdUri, {
+          provider: createdProvider,
+          title: "New chat",
+          status: 1,
+          lifecycle: "creating",
+          activeClients: [],
+          ...(workingDirectories ? { workingDirectories } : {}),
+          chats: [{ resource: createdChatUri, title: "New chat", status: 1, modifiedAt: now, ...(workingDirectories ? { workingDirectories } : {}) }],
+          defaultChat: createdChatUri,
+        } as SessionState);
+        result(null);
+      }
       else if (method === "ping") result(null);
       else if (method === "subscribe") {
         if (params.channel === "ahp-session:/unavailable") {

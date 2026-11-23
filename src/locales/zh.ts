@@ -500,6 +500,8 @@ export const zh: LocaleDict = {
     activeSection: "活跃",
     pinSession: "固定到活跃",
     unpinSession: "取消固定",
+    newLocalSession: "新建本机会话",
+    newPeerSession: "新建 {peer} 会话",
   },
 
   // Project
@@ -551,8 +553,17 @@ export const zh: LocaleDict = {
   project: {
     add: "添加项目",
     addTitle: "添加项目",
-    inputPath: "输入项目路径",
-    pathHint: "请输入服务器上 git 仓库的绝对路径",
+    inputPath: "项目路径",
+    pathHint: "可直接从上方磁盘/根目录逐级点选文件夹，也可手动粘贴路径",
+    targetLabel: "创建位置",
+    targetLocal: "本机 (CodeMux)",
+    selectFolderTitle: "选择服务器文件夹",
+    drivesRoot: "磁盘",
+    homeDir: "主目录",
+    parentDir: "上一级",
+    emptySubfolders: "无子文件夹（已选中当前目录）",
+    loadingFolders: "正在加载目录...",
+    filterFolders: "筛选当前目录...",
     browse: "浏览",
     browseNotSupported: "当前浏览器不支持文件夹选择",
     adding: "正在添加项目...",

@@ -447,6 +447,15 @@ export class GatewayServer {
 
       case GatewayRequestType.SESSION_CREATE: {
         const req = p as SessionCreateRequest;
+        if (req?.sourceId !== undefined && !nonEmptyString(req.sourceId)) {
+          throw invalidCatalogParams("sourceId must be a non-empty string");
+        }
+        if (req?.sourceId !== undefined) {
+          if (req?.projectId !== undefined && req.projectId !== null && !nonEmptyString(req.projectId)) {
+            throw invalidCatalogParams("projectId must be a non-empty string or null");
+          }
+          return this.engineManager.createSession(req.engineType, req.directory, req.worktreeId, req.projectId, req.sourceId);
+        }
         if (req?.projectId !== undefined) {
           if (req.projectId !== null && !nonEmptyString(req.projectId)) throw invalidCatalogParams("projectId must be a non-empty string or null");
           return this.engineManager.createSession(req.engineType, req.directory, req.worktreeId, req.projectId);
@@ -644,6 +653,11 @@ export class GatewayServer {
       case GatewayRequestType.FILE_LIST: {
         const { directory, rootDirectory } = p as { directory: string; rootDirectory?: string };
         return fileService.listDirectory(directory, rootDirectory ?? directory);
+      }
+
+      case GatewayRequestType.FILE_BROWSE_DIRS: {
+        const directory = typeof p?.directory === "string" ? p.directory : undefined;
+        return fileService.browseDirectories(directory);
       }
 
       case GatewayRequestType.FILE_READ: {

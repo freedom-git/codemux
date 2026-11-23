@@ -4,7 +4,7 @@ import webConfig from "./vite.web.config";
 import type { IncomingMessage } from "http";
 import { remoteAccessManager } from "./scripts/remote-access-manager";
 import { createRemoteAccessPlugin } from "./scripts/remote-access-plugin";
-import { preserveProxyRequestIdentity } from "./scripts/auth-proxy-plugin";
+import { DEV_SW_CLEANUP_SCRIPT, preserveProxyRequestIdentity } from "./scripts/auth-proxy-plugin";
 import { deviceStore } from "./scripts/device-store";
 import type { DeviceInfo } from "./shared/device-store-types";
 import { sendJson, parseBody, getClientIp, isLocalRequest, getLocalIp, requireAuth } from "./shared/http-utils";
@@ -157,6 +157,21 @@ export default mergeConfig(webConfig, defineConfig({
 
           const isLocal = isLocalRequest(req);
           sendJson(res, { isLocal });
+        });
+
+        // ====================================================================
+        // Dev-mode PWA Service Worker eviction
+        // ====================================================================
+        server.middlewares.use((req, res, next) => {
+          const pathname = req.url?.split("?")[0];
+          if (pathname !== "/sw.js" || (req.method !== "GET" && req.method !== "HEAD")) {
+            next();
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+          res.end(req.method === "HEAD" ? undefined : DEV_SW_CLEANUP_SCRIPT);
         });
 
         // ====================================================================

@@ -358,6 +358,31 @@ describe("AgentHostService", () => {
     await adapter.setEnabled(true);
     expect((await adapter.listSessions("copilot")).map(s => s.title)).toEqual(["Native editor chat", "Adopted VS Code chat"]);
   });
+
+  it("creates a new VS Code session via createSession, keeps provisional sessions available across poll cycles, and falls back when requested engine is unsupported", async () => {
+    const server = await createAgentHostFixture("copilotcli");
+    cleanup.push(() => server.close());
+    const adapter = new AgentHostService({ enabled: true, discover: async () => [server.endpoint], pollMs: 25 });
+    cleanup.push(() => adapter.stop());
+    await adapter.start();
+    expect(adapter.getState().canCreateSession).toBe(true);
+
+    // Requesting "opencode" (unsupported in VS Code) falls back to advertised "copilotcli" -> "copilot"
+    const created = await adapter.createSession("opencode", "/tmp/new-vscode-project");
+    expect(created.engineType).toBe("copilot");
+    expect(created.directory).toContain("new-vscode-project");
+    expect(created.connection).toMatchObject({ source: "VS Code", executor: "VS Code", available: true });
+
+    // Wait across background listSessions polls while the new session is still idle-provisional
+    const pollsBefore = server.requests.filter(r => r.method === "listSessions").length;
+    await expect.poll(() => server.requests.filter(r => r.method === "listSessions").length).toBeGreaterThan(pollsBefore + 1);
+    expect((await adapter.getSession(created.id))?.connection?.available).toBe(true);
+
+    // Sending the first prompt routes directly to the newly created VS Code chat
+    await adapter.sendMessage(created.id, [{ type: "text", text: "hello from CodeMux" }]);
+    const createdChatUri = String(created.engineMeta?.ahpChat);
+    expect(server.extraChats.get(createdChatUri)?.activeTurn?.message.text).toBe("hello from CodeMux");
+  });
 });
 
 describe("native projection", () => {

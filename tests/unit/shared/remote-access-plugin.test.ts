@@ -9,7 +9,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { RemoteAccessController } from "../../../shared/remote-access-controller";
 import type { RemoteAccessTunnelInfo } from "../../../shared/remote-access";
 import { createRemoteAccessPlugin } from "../../../scripts/remote-access-plugin";
-import { preserveProxyRequestIdentity } from "../../../scripts/auth-proxy-plugin";
+import { createAuthProxyPlugin, preserveProxyRequestIdentity } from "../../../scripts/auth-proxy-plugin";
 
 const ENTRY = "http://codemux.example.test";
 const cleanup: (() => Promise<unknown>)[] = [];
@@ -146,3 +146,31 @@ describe("createRemoteAccessPlugin", () => {
     expect(host.getSettings().remoteAccessMode).toBe("custom");
   });
 });
+
+describe("createAuthProxyPlugin", () => {
+  it("serves a self-unregistering JavaScript service worker at /sw.js instead of HTML fallback", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "codemux-auth-proxy-plugin-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "index.html"), "<!doctype html><html><body>SPA</body></html>");
+    const server = await createServer({
+      configFile: false,
+      root,
+      logLevel: "silent",
+      plugins: [createAuthProxyPlugin({ defaultPort: 8233 })],
+      server: { port: 0, host: "127.0.0.1", hmr: false },
+    });
+    cleanup.push(() => server.close());
+    await server.listen();
+    const addr = server.httpServer?.address();
+    if (!addr || typeof addr === "string") throw new Error("Expected Vite TCP server.");
+
+    const swRes = await fetch(`http://127.0.0.1:${addr.port}/sw.js`);
+    expect(swRes.status).toBe(200);
+    expect(swRes.headers.get("content-type")).toContain("application/javascript");
+    expect(swRes.headers.get("cache-control")).toContain("no-store");
+    const script = await swRes.text();
+    expect(script).toContain("self.skipWaiting()");
+    expect(script).toContain("self.registration.unregister()");
+  });
+});
+

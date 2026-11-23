@@ -24,6 +24,7 @@ export interface EngineSharingState {
 /** A host connection is independent of the engines its providers run. */
 export interface SessionSourceState extends EngineSharingState {
   id: string;
+  canCreateSession?: boolean;
   providers: Array<{ id: string; supported: boolean; engineType?: EngineType }>;
 }
 
@@ -438,6 +439,30 @@ export interface FileExplorerNode {
   type: "file" | "directory";
   ignored: boolean;
   size?: number;
+}
+
+export interface DirectoryBrowseEntry {
+  name: string;
+  path: string;
+  kind: "drive" | "directory";
+  isGitRepo?: boolean;
+  dimmed?: boolean;
+}
+
+export interface DirectoryBrowseBreadcrumb {
+  label: string;
+  path: string;
+}
+
+export interface DirectoryBrowseResult {
+  /** Empty string "" when listing Windows drives at the top level. */
+  currentPath: string;
+  /** null at the top-level root; "" on Windows when stepping up from a drive root back to drives list. */
+  parentPath: string | null;
+  homePath: string;
+  hasDriveRoot: boolean;
+  breadcrumbs: DirectoryBrowseBreadcrumb[];
+  entries: DirectoryBrowseEntry[];
 }
 
 export interface FileExplorerContent {
@@ -926,6 +951,7 @@ export const GatewayRequestType = {
 
   // File Explorer
   FILE_LIST: "file.list",
+  FILE_BROWSE_DIRS: "file.browseDirs",
   FILE_READ: "file.read",
   FILE_GIT_STATUS: "file.gitStatus",
   FILE_GIT_DIFF: "file.gitDiff",
@@ -1026,6 +1052,7 @@ export interface SessionCreateRequest {
   directory: string;
   worktreeId?: string;
   projectId?: string | null;
+  sourceId?: string;
 }
 
 export interface SessionArchiveRequest {

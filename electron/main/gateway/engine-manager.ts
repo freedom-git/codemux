@@ -1446,8 +1446,34 @@ export class EngineManager extends EventEmitter {
     directory: string,
     worktreeId?: string,
     projectId?: string | null,
+    sourceId?: string,
   ): Promise<UnifiedSession> {
     if (engineType) engineType = this.resolveEngineType(engineType);
+    if (sourceId !== undefined) {
+      const source = this.sessionSources.get(sourceId);
+      if (!source?.createSession) {
+        throw new Error(`Session source does not support creating sessions: ${sourceId}`);
+      }
+      let sessionDir = directory;
+      if (worktreeId) {
+        const { worktreeManager } = await import("../services/worktree-manager");
+        const resolvedProjectId = await worktreeManager.resolveProjectId(directory);
+        const wt = worktreeManager.getWorktreeByName(resolvedProjectId, worktreeId);
+        if (wt) sessionDir = wt.directory;
+      }
+      const externalSession = await source.createSession(engineType, sessionDir);
+      const sourceAdapter = this.getAdapterOrThrow(externalSession.engineType);
+      const snapshot = await this.refreshCatalog(sourceAdapter, true);
+      const conv = conversationStore.findByEngineSession(externalSession.id, externalSession.engineType, snapshot.sourceId)
+        ?? conversationStore.findByEngineSession(externalSession.id, externalSession.engineType);
+      if (!conv) throw new Error("The created session could not be mapped locally.");
+      this.sessionEngineMap.set(conv.id, externalSession.engineType);
+      this.authoritativeSessions.set(conv.id, externalSession);
+      this.rememberLiveSessionFields(conv.id, externalSession, sourceAdapter.hasSession(externalSession.id));
+      const session = this.sessionFromConversation(conv);
+      this.emit("session.created", { session });
+      return session;
+    }
     if (projectId) projectId = canonicalCodexProjectId(projectId);
     const project = projectId == null ? undefined : this.requireCatalogProject(projectId);
     if (project && engineType && project.engineType !== engineType) throw new Error("The project belongs to another engine.");

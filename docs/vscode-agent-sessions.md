@@ -73,7 +73,9 @@ reasoning choices from the model schema, and image input requires advertised
 vision support. Unsupported or immutable configuration is not emulated.
 Authentication and harness availability remain the editor's responsibility.
 
-- New CodeMux conversations continue to use their existing local adapters/SDKs.
+- Local CodeMux conversations continue to use their existing local adapters/SDKs;
+  when VS Code sharing is connected, **Add Project** and project new-session menus
+  also let you choose **Local (CodeMux)** or **VS Code** (`createSession` over AHP).
 - VS Code conversations retain their native chat identity and execution owner.
   Their model and mode controls use that owner's advertised choices.
 - VS Code keeps its provider authentication. CodeMux does not copy provider

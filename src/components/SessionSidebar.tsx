@@ -12,7 +12,7 @@ import { isProjectPathVisible } from "../../shared/project-path-filter";
 import { useI18n, formatMessage } from "../lib/i18n";
 import { isDefaultTitle } from "../lib/session-utils";
 import { filterSessionsBySearch } from "../lib/active-sessions";
-import type { UnifiedProject, UnifiedWorktree, EngineType, SessionActivityStatus, ScheduledTask } from "../types/unified";
+import type { UnifiedProject, UnifiedWorktree, EngineType, SessionActivityStatus, ScheduledTask, SessionSourceState } from "../types/unified";
 import { configStore, isEngineEnabled, getDefaultEngineType, setDefaultNewSessionEngine } from "../stores/config";
 import { getEngineBadge } from "./share/common";
 import { ScheduledTaskSection } from "./ScheduledTaskSection";
@@ -40,8 +40,9 @@ interface SessionSidebarProps {
   projects: UnifiedProject[];
   getSessionStatus: (sessionId: string) => SessionActivityStatus;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (directory?: string, engineType?: EngineType, worktreeId?: string) => void;
+  onNewSession: (directory?: string, engineType?: EngineType, worktreeId?: string, sourceId?: string) => void;
   newSessionPending?: boolean;
+  sessionSources?: SessionSourceState[];
   onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteProjectSessions: (projectID: string, projectName: string, sessionCount: number) => void;
@@ -87,6 +88,9 @@ export function SessionSidebar(props: SessionSidebarProps) {
   const [pendingDeleteId, setPendingDeleteId] = createSignal<string | null>(null);
   const [searchQuery, setSearchQuery] = createSignal("");
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
+  const creatableSources = createMemo(() =>
+    (props.sessionSources ?? []).filter((source) => source.enabled && source.available && source.canCreateSession),
+  );
   const archiveSessions = createMemo(() => props.sessions.filter((session) => (session.archived === true) === (props.showArchived === true)));
   const projectView = createMemo(() => buildSessionProjectView(archiveSessions(), props.projects, Object.values(sessionStore.catalogs)));
   const visibleSessions = createMemo(() => visibleSessionsForProjectPaths(
@@ -519,6 +523,60 @@ export function SessionSidebar(props: SessionSidebarProps) {
 
   const getProjectDirectory = (project: UnifiedProject): string | undefined => {
     return project.directory || undefined;
+  };
+
+  const buildNewSessionMenuItems = (
+    dir: string | undefined,
+    worktreeId?: string,
+    preferExternal = false,
+  ): ContextMenuItem[] => {
+    const sources = creatableSources();
+    if (sources.length === 0 || worktreeId) {
+      return [{
+        id: "new-session",
+        label: props.newSessionPending ? t().common.loading : t().sidebar.newSession,
+        icon: <PlusIcon />,
+        disabled: props.newSessionPending,
+        onSelect: () => props.onNewSession(dir, undefined, worktreeId),
+      }];
+    }
+    const localItem: ContextMenuItem = {
+      id: "new-local-session",
+      label: props.newSessionPending ? t().common.loading : t().sidebar.newLocalSession,
+      icon: <PlusIcon />,
+      disabled: props.newSessionPending,
+      onSelect: () => props.onNewSession(dir, undefined, worktreeId),
+    };
+    const sourceItems: ContextMenuItem[] = sources.map((source) => ({
+      id: `new-session-${source.id}`,
+      label: props.newSessionPending
+        ? t().common.loading
+        : formatMessage(t().sidebar.newPeerSession, { peer: source.peerName }),
+      icon: <PlusIcon />,
+      disabled: props.newSessionPending,
+      onSelect: () => props.onNewSession(dir, undefined, worktreeId, source.id),
+    }));
+    return preferExternal ? [...sourceItems, localItem] : [localItem, ...sourceItems];
+  };
+
+  const handlePlusNewSessionClick = (
+    e: MouseEvent & { currentTarget: HTMLButtonElement },
+    title: string,
+    dir: string | undefined,
+    preferExternal = false,
+  ) => {
+    e.stopPropagation();
+    if (creatableSources().length === 0) {
+      props.onNewSession(dir);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    setContextMenu({
+      x: rect.left,
+      y: rect.bottom + 4,
+      title,
+      items: buildNewSessionMenuItems(dir, undefined, preferExternal),
+    });
   };
 
   return (
@@ -971,15 +1029,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
               const dwgMenuTrigger = createContextMenuTrigger(() => {
                 const group = dwg();
                 const dir = group.project ? getProjectDirectory(group.project) : undefined;
-                const items: ContextMenuItem[] = [
-                  {
-                    id: "new-session",
-                    label: props.newSessionPending ? t().common.loading : t().sidebar.newSession,
-                    icon: <PlusIcon />,
-                    disabled: props.newSessionPending,
-                    onSelect: () => props.onNewSession(dir),
-                  },
-                ];
+                const items: ContextMenuItem[] = [...buildNewSessionMenuItems(dir)];
                 if (props.onNewTeamTask) {
                   items.push({
                     id: "new-team-task",
@@ -1034,10 +1084,11 @@ export function SessionSidebar(props: SessionSidebarProps) {
                     <div class={`flex items-center gap-0.5 ${hoveredProject() === dwg().projectID ? "opacity-100" : "opacity-0"}`}>
                       <button
                         class="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-all"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          props.onNewSession(dwg().project ? getProjectDirectory(dwg().project!) : undefined);
-                        }}
+                        onClick={(e) => handlePlusNewSessionClick(
+                          e,
+                          dwg().name,
+                          dwg().project ? getProjectDirectory(dwg().project!) : undefined,
+                        )}
                         title={props.newSessionPending ? t().common.loading : t().sidebar.newSession}
                         disabled={props.newSessionPending}
                       >
@@ -1281,11 +1332,13 @@ export function SessionSidebar(props: SessionSidebarProps) {
             <div class="flex-1" />
             <Show when={props.showAddProject !== false}>
               <button
+                data-action="add-project"
                 onClick={(e) => { e.stopPropagation(); props.onAddProject(); }}
-                class="flex-shrink-0 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded transition-colors"
+                class="flex-shrink-0 p-1 [@media(pointer:coarse)]:p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded transition-colors"
                 title={t().project.add}
+                aria-label={t().project.add}
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="[@media(pointer:coarse)]:w-4 [@media(pointer:coarse)]:h-4">
                   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
                   <path d="M12 10v6" /><path d="M9 13h6" />
                 </svg>
@@ -1295,10 +1348,11 @@ export function SessionSidebar(props: SessionSidebarProps) {
               <button
                 onClick={(e) => { e.stopPropagation(); props.onRefreshSessions?.(); }}
                 disabled={props.refreshingSessions}
-                class="flex-shrink-0 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded transition-colors disabled:opacity-50"
+                class="flex-shrink-0 p-1 [@media(pointer:coarse)]:p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded transition-colors disabled:opacity-50"
                 title={t().sidebar.refreshSessions}
+                aria-label={t().sidebar.refreshSessions}
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class={props.refreshingSessions ? "animate-spin" : ""}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class={`[@media(pointer:coarse)]:w-[15px] [@media(pointer:coarse)]:h-[15px] ${props.refreshingSessions ? "animate-spin" : ""}`}>
                   <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
                   <path d="M21 3v5h-5" />
                   <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
@@ -1311,6 +1365,9 @@ export function SessionSidebar(props: SessionSidebarProps) {
             {(project) => {
               const isHovered = () => hoveredProject() === project.projectID;
               const isExpanded = () => isSearching() || isProjectExpanded(project.projectID);
+              const resolveProjectGroupDir = () =>
+                (project.project ? getProjectDirectory(project.project) : undefined) || project.sessions[0]?.directory || undefined;
+              const isExternalProject = () => Boolean(project.project?.catalogSourceId);
               const projectMenuTrigger = createContextMenuTrigger(() => {
                 const items: ContextMenuItem[] = [];
                 if (isElectron() && project.project) {
@@ -1324,19 +1381,13 @@ export function SessionSidebar(props: SessionSidebarProps) {
                     },
                   });
                 }
-                items.push({
-                  id: "new-session",
-                  label: props.newSessionPending ? t().common.loading : t().sidebar.newSession,
-                  icon: <PlusIcon />,
-                  disabled: props.newSessionPending,
-                  onSelect: () => props.onNewSession(project.project ? getProjectDirectory(project.project) : undefined),
-                });
+                items.push(...buildNewSessionMenuItems(resolveProjectGroupDir(), undefined, isExternalProject()));
                 if (props.onNewTeamTask && !project.project?.catalogSourceId && !projectView().displayOnlyIds.has(project.projectID)) {
                   items.push({
                     id: "new-team-task",
                     label: t().chat.teamTask,
                     icon: <TeamIcon />,
-                    onSelect: () => props.onNewTeamTask?.(project.project ? getProjectDirectory(project.project) : undefined),
+                    onSelect: () => props.onNewTeamTask?.(resolveProjectGroupDir()),
                   });
                 }
                 if (worktreeEnabled() && project.project?.directory && !project.project.catalogSourceId && !projectView().displayOnlyIds.has(project.projectID)) {
@@ -1438,11 +1489,14 @@ export function SessionSidebar(props: SessionSidebarProps) {
                       </Show>
                       {/* New session */}
                       <button
+                        data-action="project-new-session"
                         class="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-all"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          props.onNewSession(project.project ? getProjectDirectory(project.project) : undefined);
-                        }}
+                        onClick={(e) => handlePlusNewSessionClick(
+                          e,
+                          project.name,
+                          resolveProjectGroupDir(),
+                          isExternalProject(),
+                        )}
                         title={props.newSessionPending ? t().common.loading : t().sidebar.newSession}
                         disabled={props.newSessionPending}
                       >

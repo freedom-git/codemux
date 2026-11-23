@@ -24,6 +24,7 @@ test.beforeAll(async () => {
         ...sources.find(s => s.id === sourceId)!,
         enabled,
         available: enabled,
+        canCreateSession: enabled,
         status: enabled ? ("connected" as const) : ("disabled" as const),
       };
       const index = sources.findIndex(s => s.id === sourceId);
@@ -153,4 +154,99 @@ test("shows VS Code label and loading spinner with multi-minute hint while enabl
   await zhPanel.screenshot({ path: testInfo.outputPath("source-settings-loading-zh.png") });
   releaseSourceToggle?.();
   await expect(zhPanel).toContainText("已连接");
+});
+
+test("shows Add Project button and Local vs VS Code target choices on desktop and mobile", async ({ page }, testInfo) => {
+  // Ensure VS Code source is enabled and connected
+  await page.evaluate(() => {
+    localStorage.setItem("settings:locale", JSON.stringify("en"));
+    localStorage.setItem("settings:theme", JSON.stringify("light"));
+  });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto(`${server.baseUrl}/settings`);
+  const panel = page.locator("[data-session-source-settings]");
+  const toggleSwitch = panel.getByRole("switch", { name: "Connect to VS Code chats" });
+  await expect(toggleSwitch).toBeVisible({ timeout: 10_000 });
+  await toggleSwitch.scrollIntoViewIfNeeded();
+  if ((await panel.textContent())?.includes("Not connected")) {
+    await toggleSwitch.click();
+    await expect(panel).toContainText("Sharing is off");
+  }
+  if ((await toggleSwitch.getAttribute("aria-checked")) !== "true") {
+    await toggleSwitch.click();
+  }
+  await expect(panel).toContainText("Connected");
+
+  // Desktop: verify Add Project icon (left of Refresh) is visible and offers Local vs VS Code
+  await page.goto(`${server.baseUrl}/chat`);
+  const addProjectBtn = page.locator('[data-action="add-project"]');
+  await expect(addProjectBtn).toBeVisible();
+  await addProjectBtn.click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const targetGroup = dialog.locator("[data-add-project-target]");
+  await expect(targetGroup).toBeVisible();
+  await expect(targetGroup.getByRole("radio", { name: "Local (CodeMux)" })).toHaveAttribute("aria-checked", "true");
+  const vscodeRadio = targetGroup.getByRole("radio", { name: "VS Code" });
+  await expect(vscodeRadio).toBeVisible();
+  await vscodeRadio.click();
+  await expect(vscodeRadio).toHaveAttribute("aria-checked", "true");
+  await dialog.locator('input[type="text"]').fill("/test/remote-vscode-repo");
+  await dialog.screenshot({ path: testInfo.outputPath("add-project-vscode-en.png") });
+
+  await dialog.getByRole("button", { name: "Add Project" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("[data-session-origin]").filter({ hasText: "VS Code" }).first()).toBeVisible();
+
+  // Desktop: hover existing project and click '+' to see New Local Session / New VS Code Session menu
+  const alphaRow = page.locator("aside .group").filter({ hasText: "project-alpha" }).first();
+  await alphaRow.hover();
+  await alphaRow.locator('[data-action="project-new-session"]').click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "New Local Session" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "New VS Code Session" })).toBeVisible();
+  await menu.screenshot({ path: testInfo.outputPath("project-plus-menu-en.png") });
+  await page.keyboard.press("Escape");
+
+  // Mobile (dark zh): verify Add Project button AND long-press context menu on existing project
+  await page.evaluate(() => {
+    localStorage.setItem("settings:locale", JSON.stringify("zh"));
+    localStorage.setItem("settings:theme", JSON.stringify("dark"));
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.reload();
+  await expect(page).toHaveURL(/\/chat/);
+
+  // Open mobile sidebar drawer
+  await page.locator('header button, [aria-label*="侧边栏"], button:has(svg line[x1="4"])').first().click();
+  const mobileAddProject = page.locator('[data-action="add-project"]');
+  await expect(mobileAddProject).toBeVisible();
+  await mobileAddProject.click();
+
+  const zhDialog = page.getByRole("dialog");
+  await expect(zhDialog).toBeVisible();
+  await expect(zhDialog.getByRole("radio", { name: "本机 (CodeMux)" })).toBeVisible();
+  await expect(zhDialog.getByRole("radio", { name: "VS Code" })).toBeVisible();
+  // Verify interactive folder drill-down from drive roots without typing
+  await expect(zhDialog.locator('[data-folder-entry="C:\\\\"]')).toBeVisible();
+  await zhDialog.locator('[data-folder-entry="Q:\\\\"]').click();
+  await zhDialog.locator('[data-folder-entry="Q:\\\\Projects"]').click();
+  await zhDialog.locator('[data-folder-entry="Q:\\\\Projects\\\\codemux"]').click();
+  await expect(zhDialog.locator('input[type="text"]')).toHaveValue("Q:\\Projects\\codemux");
+  await page.screenshot({ path: testInfo.outputPath("add-project-vscode-mobile-zh.png") });
+  await zhDialog.getByRole("button", { name: "取消" }).click();
+
+  // Right-click / contextmenu on existing project row in mobile sidebar -> shows 新建本机会话 & 新建 VS Code 会话
+  const zhAlphaRow = page.locator("aside .group").filter({ hasText: "project-alpha" }).first();
+  await zhAlphaRow.click({ button: "right" });
+  const zhMenu = page.getByRole("menu");
+  await expect(zhMenu).toBeVisible();
+  await expect(zhMenu.getByRole("menuitem", { name: "新建本机会话" })).toBeVisible();
+  await expect(zhMenu.getByRole("menuitem", { name: "新建 VS Code 会话" })).toBeVisible();
+  await page.waitForTimeout(160);
+  await page.screenshot({ path: testInfo.outputPath("project-context-menu-mobile-zh.png") });
 });
