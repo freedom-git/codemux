@@ -9,9 +9,9 @@ not a history import or a second agent running the same conversation.
 1. Open a compatible VS Code installation and authenticate its desired provider there.
 2. Create or open a chat backed by its Agent Host.
 3. In CodeMux, open **Settings > Session sources** and enable
-   **Connect to Agent Host chats**.
+   **Connect to VS Code chats** (initial session discovery shows a loading indicator and may take a few minutes).
 4. Expand the corresponding project in the sidebar and select a chat with the
-   **Agent Host** connection-source badge.
+   **VS Code** connection-source badge.
 
 The original Copilot integration was exercised against VS Code 1.147.0 using
 the AHP 1.1 protocol. Provider routing is tested with authenticated local AHP
@@ -41,12 +41,10 @@ supported providers. Disabling it disconnects all attached Host chats together;
 it does not disable any local engine or the separate Codex Desktop connection.
 
 Connection details separate **Connection source**, **Creating app**, and
-**Current executor**. AHP chats use `Agent Host` for the source and executor;
-the creating app remains unknown. The registry location, editor/standalone
-process mode, provider, and currently connected clients do not establish which
-application created an individual chat. CodeMux does not infer Agency versus
-VS Code from them or from unverified extension metadata. This does not filter
-either application's chats out of the catalogue.
+**Current executor**. AHP chats use `VS Code` for the source and executor;
+external CLI / Agency sessions (`vscode.external` without `ehcliAdoptable`) are
+excluded by disabling `showExternalSessions` and filtering external entries so
+only VS Code chats are surfaced cleanly.
 
 The sidebar uses the known creating app when available, otherwise the connection
 source, with a corresponding tooltip. Saved AHP records with the old hardcoded

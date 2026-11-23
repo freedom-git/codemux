@@ -453,7 +453,7 @@ class GatewayAPI {
   }
 
   setSessionSourceEnabled(sourceId: string, enabled: boolean): Promise<SessionSourceState> {
-    return gatewayClient.request(GatewayRequestType.SESSION_SOURCE_SET, { sourceId, enabled });
+    return gatewayClient.request(GatewayRequestType.SESSION_SOURCE_SET, { sourceId, enabled }, 0);
   }
 
   setSessionSharing(engineType: EngineType, enabled: boolean): Promise<EngineSharingState> {

@@ -36,6 +36,7 @@
     "server:access-code": "bun scripts/server-auth.ts access-code",
     "server:access-requests": "bun scripts/server-auth.ts access-requests",
     "update:cloudflared": "bun scripts/update-cloudflared.ts",
+    "update:devtunnel": "bun scripts/update-devtunnel.ts",
     "test:web-api": "bun scripts/test-web-api.ts",
     "restart": "bun scripts/restart.ts",
     "test:unit": "vitest run",

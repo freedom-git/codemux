@@ -21,6 +21,10 @@ function unifiedEffort(value: unknown): ReasoningEffort | undefined {
   return value === "xhigh" ? "max" : value === "max" ? "ultra"
     : value === "low" || value === "medium" || value === "high" ? value : undefined;
 }
+function isExternalCliSession(session: SessionState): boolean {
+  const meta = session._meta as Record<string, unknown> | undefined;
+  return meta?.["vscode.external"] === true && meta?.["ehcliAdoptable"] !== true;
+}
 interface Entry {
   provider: string;
   source: string;
@@ -58,11 +62,14 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   private generation = 0;
   private revision = 0;
   private initialized = false;
+  private initialRefreshDone = false;
+  private configuredHosts = new WeakSet<AgentHostConnection>();
 
   constructor(private readonly options: AgentHostServiceOptions = {}) { super(); this.enabled = options.enabled === true; }
   async start() { this.running = true; this.seed(); if (this.enabled) await this.refreshHosts(); else this.publishCatalog(); }
   async stop() {
     this.running = false;
+    this.initialRefreshDone = false;
     this.generation++;
     clearTimeout(this.timer);
     clearTimeout(this.publishing);
@@ -85,11 +92,12 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   }
   getState(): SessionSourceState {
     const hosts = [...this.hosts.values()].filter(host => host.connected);
-    const available = this.enabled && hosts.length > 0;
+    const syncingInitial = this.enabled && !this.initialRefreshDone && Boolean(this.refresh);
+    const available = this.enabled && !syncingInitial && hosts.length > 0;
     const providers = [...new Set(hosts.flatMap(host => host.root?.agents.map(agent => agent.provider) ?? []))];
-    return { id: "vscode", enabled: this.enabled, available, peerName: "Agent Host", kind: "attach",
+    return { id: "vscode", enabled: this.enabled, available, peerName: "VS Code", kind: "attach",
       providers: providers.map(id => ({ id, engineType: providerEngine(id), supported: providerEngine(id) !== undefined })),
-      status: !this.enabled ? "disabled" : available ? "connected" : this.refresh ? "connecting" : "unavailable" };
+      status: !this.enabled ? "disabled" : syncingInitial ? "connecting" : available ? "connected" : this.refresh ? "connecting" : "unavailable" };
   }
   async setEnabled(enabled: boolean): Promise<SessionSourceState> {
     const previous = this.transition;
@@ -121,8 +129,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     }
   }
   private connection(host?: AgentHostConnection, writable = true) {
-    // Neither the registry nor the harness identifies the chat's creating application.
-    return { source: "Agent Host", origin: undefined, executor: "Agent Host", shared: true, authoritative: true, localRemovalOnly: true,
+    return { source: "VS Code", origin: undefined, executor: "VS Code", shared: true, authoritative: true, localRemovalOnly: true,
       available: this.enabled && host?.connected === true, readOnly: !writable,
       models: [], modes: [],
       capabilities: { ...this.getCapabilities(), imageAttachment: false, modelSwitchable: false, dynamicModes: false },
@@ -162,27 +169,45 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
           if (generation !== this.generation || !this.enabled) { await host.close(); return; }
         }
         try {
+          if (!this.configuredHosts.has(host)) {
+            this.configuredHosts.add(host);
+            if (host.root?.config?.schema?.properties?.showExternalSessions && host.root.config.values?.showExternalSessions !== "none") {
+              await host.dispatch(ROOT, { type: "root/configChanged", config: { showExternalSessions: "none" } }).catch(() => undefined);
+            }
+          }
           await host.request("ping", { channel: ROOT });
           const seen = new Set<string>(), cursors = new Set<string>();
           let cursor: string | undefined;
           do {
             const page = await host.request("listSessions", { channel: ROOT, limit: 100, ...(cursor ? { cursor } : {}) });
-            for (const summary of page.items) {
-              try {
-                await host.subscribe(summary.resource);
-                const session = host.sessions.get(summary.resource);
-                if (session) {
-                  seen.add(summary.resource);
-                  this.catalogSession(host, summary.resource, session);
-                }
-              } catch { /* One inaccessible session must not disconnect other providers. */ }
-            }
+            const items = [...page.items];
+            const concurrency = Math.min(8, items.length);
+            let nextIndex = 0;
+            await Promise.all(Array.from({ length: concurrency }, async () => {
+              while (nextIndex < items.length && generation === this.generation && this.enabled) {
+                const summary = items[nextIndex++];
+                try {
+                  await host.subscribe(summary.resource);
+                  const session = host.sessions.get(summary.resource);
+                  if (session && !isExternalCliSession(session)) {
+                    seen.add(summary.resource);
+                    this.catalogSession(host, summary.resource, session);
+                  }
+                } catch { /* One inaccessible session must not disconnect other providers. */ }
+              }
+            }));
             cursor = page.nextCursor;
             if (cursor && cursors.has(cursor)) throw new Error("Repeated catalogue cursor.");
             if (cursor) cursors.add(cursor);
           } while (cursor && generation === this.generation);
-          for (const entry of this.entries.values()) {
+          for (const [id, entry] of this.entries) {
             if (entry.host === host && !seen.has(entry.sessionUri)) {
+              const session = host.sessions.get(entry.sessionUri);
+              if (session && isExternalCliSession(session)) {
+                this.clearInputs(id);
+                this.entries.delete(id);
+                continue;
+              }
               entry.host = undefined;
               entry.session = { ...entry.session, connection: this.connection(), activityStatus: "idle" };
               this.clearInputs(entry.session.id);
@@ -200,6 +225,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
           }
         } catch { await host.close(); }
       }
+      if (generation === this.generation && this.enabled) this.initialRefreshDone = true;
     })().finally(() => {
       this.refresh = undefined;
       this.publishCatalog();
@@ -214,6 +240,15 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     this.timer.unref?.();
   }
   private catalogSession(host: AgentHostConnection, uri: string, session: SessionState) {
+    if (isExternalCliSession(session)) {
+      for (const [id, entry] of this.entries) {
+        if (entry.host === host && entry.sessionUri === uri) {
+          this.clearInputs(id);
+          this.entries.delete(id);
+        }
+      }
+      return;
+    }
     const chats = session.chats ?? [];
     const admitted = new Set<string>();
     for (const chat of chats) {
@@ -367,7 +402,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     }));
     const projects = [...new Map(sessions.map(session => [session.projectId!, {
       id: session.projectId!, directory: session.directory, roots: session.directory ? [session.directory] : [],
-      name: session.directory ? `${basename(session.directory)} (Agent Host)` : "Agent Host",
+      name: session.directory ? `${basename(session.directory)} (VS Code)` : "VS Code",
     }])).values()];
     return { sourceId: agentHostCatalogId(engineType), engineType, revision: String(++this.revision), complete: true, projects, sessions };
   }

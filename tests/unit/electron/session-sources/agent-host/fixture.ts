@@ -22,6 +22,8 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
   } as SessionState;
   let chat = { resource: chatUri, title: "Native editor chat", status: 1, modifiedAt: now, turns: [] } as ChatState;
   const extraChats = new Map<string, ChatState>();
+  const extraSessions = new Map<string, SessionState>();
+  let rootConfig: RootState["config"] | undefined;
   let seq = 0;
   const requests: { method: string; params: Record<string, unknown> }[] = [];
   const server = createServer();
@@ -33,15 +35,22 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
   const clients = new Map<WebSocket, { id: string; subscriptions: Set<string> }>();
   const broadcast = (channel: string, action: Wire<StateAction>, origin?: { clientId: string; clientSeq: number }, rejectionReason?: string) => {
     if (!rejectionReason) {
+      if (channel === "ahp-root://" && (action as { type?: string }).type === "root/configChanged" && rootConfig) {
+        const next = action as { config: Record<string, unknown>; replace?: boolean };
+        rootConfig = { ...rootConfig, values: next.replace ? { ...next.config } : { ...rootConfig.values, ...next.config } };
+      }
       if (channel === chatUri) chat = chatReducer(chat, action as ChatAction);
       else if (extraChats.has(channel)) extraChats.set(channel, chatReducer(extraChats.get(channel)!, action as ChatAction));
       if (channel === sessionUri) session = sessionReducer(session, action as SessionAction);
+      else if (extraSessions.has(channel)) extraSessions.set(channel, sessionReducer(extraSessions.get(channel)!, action as SessionAction));
     }
     const params = { channel, action, serverSeq: ++seq, ...(origin ? { origin } : {}), ...(rejectionReason ? { rejectionReason } : {}) };
     for (const [ws, client] of clients) if (ws.readyState === WebSocket.OPEN && client.subscriptions.has(channel)) ws.send(JSON.stringify({ jsonrpc: "2.0", method: "action", params }));
   };
   const fixture = {
-    endpoint, sessionUri, chatUri, requests, broadcast, extraChats,
+    endpoint, sessionUri, chatUri, requests, broadcast, extraChats, extraSessions,
+    get rootConfig() { return rootConfig; },
+    set rootConfig(value: RootState["config"] | undefined) { rootConfig = value; },
     models: [{ id: "test-model", name: "Test", provider }] as NonNullable<RootState["agents"][number]["models"]>,
     providers: [provider],
     unavailableSession: false,
@@ -71,10 +80,18 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
         result({ protocolVersion: "1.1.0", serverSeq: seq, snapshots: [{ resource: "ahp-root://", fromSeq: seq, state: {
           agents: fixture.providers.map(provider => ({ provider, displayName: provider, models: fixture.models.filter(model => model.provider === provider) })),
           activeSessions: [],
+          ...(rootConfig ? { config: rootConfig } : {}),
         } }] });
       } else if (method === "listSessions") result({ items: [
         ...(fixture.unavailableSession ? [{ resource: "ahp-session:/unavailable", provider: "other-harness" }] : []),
         { resource: sessionUri, ...session },
+        ...[...extraSessions.entries()]
+          .filter(([, state]) => {
+            const meta = state._meta as Record<string, unknown> | undefined;
+            const isExt = meta?.["vscode.external"] === true && meta?.["ehcliAdoptable"] !== true;
+            return !isExt || rootConfig?.values?.showExternalSessions !== "none";
+          })
+          .map(([resource, state]) => ({ resource, ...state })),
       ] });
       else if (method === "ping") result(null);
       else if (method === "subscribe") {
@@ -83,7 +100,7 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
           return;
         }
         client.subscriptions.add(params.channel);
-        const snapshot = { resource: params.channel, fromSeq: seq, state: structuredClone(params.channel === chatUri ? chat : extraChats.get(params.channel) ?? session) };
+        const snapshot = { resource: params.channel, fromSeq: seq, state: structuredClone(params.channel === chatUri ? chat : extraChats.get(params.channel) ?? extraSessions.get(params.channel) ?? session) };
         const interleave = fixture.snapshotInterleave;
         fixture.snapshotInterleave = undefined;
         interleave?.();

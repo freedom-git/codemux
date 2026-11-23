@@ -103,7 +103,8 @@ export interface TestServerConfig {
   staticRoot?: string;
   /** Sessions whose history separates content from lazily requested steps. */
   lazyStepsSessionIds?: readonly string[];
-  sessionSources?: readonly SessionSourceState[];
+  sessionSources?: SessionSourceState[];
+  onSetSessionSource?: (sourceId: string, enabled: boolean) => Promise<SessionSourceState>;
 }
 
 export interface TestServerInstance {
@@ -280,6 +281,24 @@ export async function startTestServer(
       // --- Session ---
       case GatewayRequestType.SESSION_SOURCE_LIST:
         return config?.sessionSources ?? [];
+
+      case GatewayRequestType.SESSION_SOURCE_SET: {
+        const p = payload as { sourceId: string; enabled: boolean };
+        if (config?.onSetSessionSource) {
+          return config.onSetSessionSource(p.sourceId, p.enabled);
+        }
+        const existing = config?.sessionSources?.find(s => s.id === p.sourceId);
+        if (!existing) throw new Error(`Unknown session source: ${p.sourceId}`);
+        const updated: SessionSourceState = {
+          ...existing,
+          enabled: p.enabled,
+          available: p.enabled,
+          status: p.enabled ? "connected" : "disabled",
+        };
+        const idx = config!.sessionSources!.findIndex(s => s.id === p.sourceId);
+        if (idx >= 0) config!.sessionSources![idx] = updated;
+        return updated;
+      }
 
       case GatewayRequestType.SESSION_LIST_ALL: {
         const allSessions: UnifiedSession[] = [];

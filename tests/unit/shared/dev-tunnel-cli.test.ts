@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDevTunnelCommand, sanitizeDevTunnelDiagnostic } from "../../../shared/dev-tunnel-cli";
+import { getDevTunnelPath, runDevTunnelCommand, sanitizeDevTunnelDiagnostic } from "../../../shared/dev-tunnel-cli";
 
 class Process extends EventEmitter {
   stdout = new EventEmitter();
@@ -146,3 +146,55 @@ describe("runDevTunnelCommand", () => {
     }
   });
 });
+
+describe("getDevTunnelPath", () => {
+  it.each([
+    ["darwin", "arm64", "/Applications/CodeMux.app/Contents/Resources", "/Applications/CodeMux.app/Contents/Resources/devtunnel/darwin-arm64/devtunnel"],
+    ["linux", "x64", "/opt/CodeMux/resources", "/opt/CodeMux/resources/devtunnel/linux-x64/devtunnel"],
+    ["win32", "x64", "C:\\Program Files\\CodeMux\\resources", "C:\\Program Files\\CodeMux\\resources\\devtunnel\\win32-x64\\devtunnel.exe"],
+  ] as const)("prefers the bundled binary in resourcesPath over system PATH on %s-%s", (platform, arch, resourcesPath, expected) => {
+    const existing = new Set([
+      expected,
+      platform === "win32" ? "C:\\Tools\\devtunnel.exe" : "/usr/local/bin/devtunnel",
+    ]);
+    const resolved = getDevTunnelPath({
+      platform,
+      arch,
+      env: { PATH: platform === "win32" ? "C:\\Tools" : "/usr/local/bin" },
+      resourcesPath,
+      exists: (file) => existing.has(file),
+    });
+    expect(resolved).toBe(expected);
+  });
+
+  it("reads CODEMUX_RESOURCES_PATH for the desktop local server child process and falls back to win32-x64 on ARM64 Windows", () => {
+    const bundledX64 = "C:\\Users\\alice\\AppData\\Local\\Programs\\CodeMux\\resources\\devtunnel\\win32-x64\\devtunnel.exe";
+    const resolved = getDevTunnelPath({
+      platform: "win32",
+      arch: "arm64",
+      env: {
+        CODEMUX_RESOURCES_PATH: "C:\\Users\\alice\\AppData\\Local\\Programs\\CodeMux\\resources",
+        PATH: "C:\\Windows\\System32",
+      },
+      exists: (file) => file === bundledX64,
+    });
+    expect(resolved).toBe(bundledX64);
+  });
+
+  it("falls back to PATH and WinGet directories when no bundled binary exists", () => {
+    const wingetExe = "C:\\Users\\alice\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Microsoft.devtunnel_Microsoft.Winget.Source_8wekyb3d8bbwe\\devtunnel.exe";
+    const resolved = getDevTunnelPath({
+      platform: "win32",
+      arch: "x64",
+      resourcesPath: "Q:\\Projects\\codemux\\node_modules\\electron\\dist\\resources",
+      env: {
+        PATH: "C:\\Windows\\System32",
+        LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local",
+      },
+      exists: (file) => file === wingetExe,
+      readDir: (dir) => dir.endsWith("\\Packages") ? ["Microsoft.devtunnel_Microsoft.Winget.Source_8wekyb3d8bbwe"] : [],
+    });
+    expect(resolved).toBe(wingetExe);
+  });
+});
+

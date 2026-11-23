@@ -508,6 +508,8 @@ export interface LocaleDict {
     description: string;
     connected: string;
     connecting: string;
+    connectingHint: string;
+    disabling: string;
     disabled: string;
     updating: string;
     unavailable: string;
@@ -1605,14 +1607,16 @@ export const en: LocaleDict = {
     sourcesDescription: "Connect to applications independently of their AI engines. Supported providers keep their own engine identity and original executor.",
     unsupportedProviders: "These host providers are not supported and their chats are not shown: {providers}",
     attachTitle: "Connect to {peer} chats",
-    attachDescription: "Access chats through {peer} on this computer. They may have been created by different apps; their original executor keeps running them. New CodeMux chats stay independent. Start the original executor and sign in first.",
-    attachUnavailableHint: "Start the original executor on this computer to reconnect. Saved chat history remains readable.",
+    attachDescription: "Access chats from {peer} on this computer. {peer} keeps running them while new CodeMux chats stay independent. Open {peer} and sign in first.",
+    attachUnavailableHint: "Open {peer} on this computer to reconnect. Saved chat history remains readable.",
     readOnly: "This chat is read-only. Continue it in its original app.",
     title: "Share chats with {peer}",
     peer: "the companion app",
     description: "Continue the same chats in CodeMux and {peer}. Messages, progress, and requests stay with the current executor.",
     connected: "Connected",
     connecting: "Connecting…",
+    connectingHint: "Connecting to {peer} and loading chats. Initial sync may take a few minutes—please wait…",
+    disabling: "Disconnecting…",
     disabled: "Sharing is off",
     updating: "Updating sharing…",
     unavailable: "Not connected",

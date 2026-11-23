@@ -38,6 +38,7 @@ bun run dist:mac:x64       # macOS Intel
 bun run dist:win           # Windows NSIS installer
 bun run typecheck          # Type checking
 bun run update:cloudflared # Update Cloudflare Tunnel binary
+bun run update:devtunnel   # Update Microsoft Dev Tunnels CLI binary
 ```
 
 ## Isolated Electron dev instances

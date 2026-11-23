@@ -1,24 +1,53 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, mkdtempSync, rmSync, rmdirSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import path, { join } from "node:path";
 import { tmpdir } from "node:os";
 
-export function getDevTunnelPath(): string | undefined {
-  const name = process.platform === "win32" ? "devtunnel.exe" : "devtunnel";
-  const directories = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
-  if (process.platform === "win32") {
-    for (const root of [process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Microsoft", "WinGet"), process.env.ProgramFiles && join(process.env.ProgramFiles, "WinGet")]) {
+export interface DevTunnelPathOptions {
+  platform?: NodeJS.Platform;
+  arch?: string;
+  env?: Readonly<NodeJS.ProcessEnv>;
+  resourcesPath?: string;
+  exists?: (file: string) => boolean;
+  readDir?: (dir: string) => string[];
+}
+
+export function getDevTunnelPath(options: DevTunnelPathOptions = {}): string | undefined {
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  const env = options.env ?? process.env;
+  const exists = options.exists ?? existsSync;
+  const readDir = options.readDir ?? readdirSync;
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const name = platform === "win32" ? "devtunnel.exe" : "devtunnel";
+
+  const resourcesRoot = options.resourcesPath !== undefined
+    ? options.resourcesPath
+    : (env.CODEMUX_RESOURCES_PATH || (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath);
+
+  if (resourcesRoot) {
+    const targets = [`${platform}-${arch}`];
+    if (platform === "win32" && arch !== "x64") targets.push("win32-x64");
+    for (const target of targets) {
+      const bundled = paths.join(resourcesRoot, "devtunnel", target, name);
+      if (exists(bundled)) return bundled;
+    }
+  }
+
+  const directories = (env.PATH ?? "").split(paths.delimiter).filter(Boolean);
+  if (platform === "win32") {
+    for (const root of [env.LOCALAPPDATA && paths.join(env.LOCALAPPDATA, "Microsoft", "WinGet"), env.ProgramFiles && paths.join(env.ProgramFiles, "WinGet")]) {
       if (!root) continue;
-      directories.push(join(root, "Links"));
-      const packages = join(root, "Packages");
+      directories.push(paths.join(root, "Links"));
+      const packages = paths.join(root, "Packages");
       try {
-        for (const entry of readdirSync(packages)) {
-          if (entry.startsWith("Microsoft.devtunnel_")) directories.push(join(packages, entry));
+        for (const entry of readDir(packages)) {
+          if (entry.startsWith("Microsoft.devtunnel_")) directories.push(paths.join(packages, entry));
         }
       } catch { /* WinGet is optional. */ }
     }
   }
-  return directories.map(directory => join(directory, name)).find(file => existsSync(file));
+  return directories.map(directory => paths.join(directory, name)).find(file => exists(file));
 }
 
 export class DevTunnelError extends Error {

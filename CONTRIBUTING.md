@@ -12,8 +12,9 @@ cd codemux
 # 2. Install dependencies (requires Bun)
 bun install
 
-# 3. Download Cloudflare Tunnel binary (optional, for remote access)
+# 3. Download tunnel binaries for packaging (optional in dev mode)
 bun run update:cloudflared
+bun run update:devtunnel
 
 # 4. Start the development server
 npm run dev

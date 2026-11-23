@@ -172,7 +172,7 @@ describe("HostRoutedAdapter", () => {
     expect((await source.getCatalog("copilot")).sourceId).toBe("copilot:vscode-local:v1");
     expect((await source.getCatalog("copilot")).sessions[0].id).toBe(old.id);
     const saved = (await source.getCatalog("copilot")).sessions[0];
-    expect(saved.connection).toMatchObject({ source: "Agent Host", executor: "Agent Host", available: false });
+    expect(saved.connection).toMatchObject({ source: "VS Code", executor: "VS Code", available: false });
     expect(saved.connection?.origin).toBeUndefined();
     expect((await source.getCatalog("claude")).sessions[0]).toMatchObject({ id: claude.id, connection: { available: false, sharingStatus: "disabled" } });
   });

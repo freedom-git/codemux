@@ -106,13 +106,14 @@ describe("AgentHostService", () => {
     cleanup.push(() => adapter.stop());
     await adapter.start();
     const session = (await adapter.listSessions("copilot"))[0];
-    expect(session.connection).toMatchObject({ source: "Agent Host", executor: "Agent Host", available: true });
+    expect(adapter.getState().peerName).toBe("VS Code");
+    expect(session.connection).toMatchObject({ source: "VS Code", executor: "VS Code", available: true });
     expect(session.connection?.origin).toBeUndefined();
     await adapter.restoreSession(session.id);
     expect((await adapter.getSession(session.id))?.connection?.origin).toBeUndefined();
     await adapter.setEnabled(false);
     expect((await adapter.getCatalog("copilot")).sessions[0].connection).toMatchObject({
-      source: "Agent Host", executor: "Agent Host", available: false,
+      source: "VS Code", executor: "VS Code", available: false,
     });
     await adapter.setEnabled(true);
     expect((await adapter.listSessions("copilot"))[0]).toMatchObject({ id: session.id, engineType: "copilot" });
@@ -295,6 +296,67 @@ describe("AgentHostService", () => {
     await expect(adapter.replyQuestion(question.id, [["First"]], id)).rejects.toThrow("no longer");
     expect(server.chat.activeTurn?.responseParts[0]).toMatchObject({ kind: "inputRequest", response: "accept",
       request: { answers: { choice: { state: "submitted", value: { kind: "selected", value: "one" } } } } });
+  });
+
+  it("disables external CLI session discovery on the host and filters external CLI sessions while keeping adoptable VS Code sessions", async () => {
+    const server = await createAgentHostFixture();
+    cleanup.push(() => server.close());
+    server.rootConfig = {
+      schema: {
+        type: "object",
+        properties: {
+          showExternalSessions: {
+            type: "string",
+            enum: ["none", "recent", "last24Hours", "last7Days", "last30Days"],
+          },
+        },
+      },
+      values: { showExternalSessions: "last7Days" },
+    };
+    server.extraSessions.set("ahp-session:/agency-cli", {
+      provider: "copilotcli",
+      title: "External Agency CLI chat",
+      status: 1,
+      lifecycle: "ready",
+      activeClients: [],
+      chats: [{ resource: "ahp-chat:/agency-cli", title: "External Agency CLI chat", status: 1, modifiedAt: server.chat.modifiedAt }],
+      defaultChat: "ahp-chat:/agency-cli",
+      _meta: { "vscode.external": true, name: "github/cli" },
+    } as never);
+    server.extraSessions.set("ahp-session:/legacy-vscode", {
+      provider: "copilotcli",
+      title: "Adopted VS Code chat",
+      status: 1,
+      lifecycle: "ready",
+      activeClients: [],
+      chats: [{ resource: "ahp-chat:/legacy-vscode", title: "Adopted VS Code chat", status: 1, modifiedAt: server.chat.modifiedAt }],
+      defaultChat: "ahp-chat:/legacy-vscode",
+      _meta: { "vscode.external": true, ehcliAdoptable: true },
+    } as never);
+    server.extraSessions.set("ahp-session:/agency-cli-unconfigured", {
+      provider: "copilotcli",
+      title: "External CLI chat even if host ignores config",
+      status: 1,
+      lifecycle: "ready",
+      activeClients: [],
+      chats: [{ resource: "ahp-chat:/agency-cli-unconfigured", title: "External CLI chat even if host ignores config", status: 1, modifiedAt: server.chat.modifiedAt }],
+      defaultChat: "ahp-chat:/agency-cli-unconfigured",
+      _meta: { "vscode.external": true },
+    } as never);
+
+    const adapter = new AgentHostService({ enabled: true, discover: async () => [server.endpoint], pollMs: 100_000 });
+    cleanup.push(() => adapter.stop());
+    await adapter.start();
+
+    expect(server.rootConfig?.values?.showExternalSessions).toBe("none");
+    const titles = (await adapter.listSessions("copilot")).map(s => s.title);
+    expect(titles).toEqual(["Native editor chat", "Adopted VS Code chat"]);
+
+    // Even if a host lacks showExternalSessions in rootConfig and still lists external CLI sessions, client-side filtering excludes them.
+    server.rootConfig = undefined;
+    await adapter.setEnabled(false);
+    await adapter.setEnabled(true);
+    expect((await adapter.listSessions("copilot")).map(s => s.title)).toEqual(["Native editor chat", "Adopted VS Code chat"]);
   });
 });
 

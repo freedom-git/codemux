@@ -30,6 +30,10 @@ mac:
       to: cloudflared/darwin-${arch}
       filter:
         - "**/*"
+    - from: resources/devtunnel/darwin-${arch}
+      to: devtunnel/darwin-${arch}
+      filter:
+        - "**/*"
 win:
   target:
     - target: nsis
@@ -39,6 +43,10 @@ win:
   extraResources:
     - from: resources/cloudflared/win32-${arch}
       to: cloudflared/win32-${arch}
+      filter:
+        - "**/*"
+    - from: resources/devtunnel/win32-${arch}
+      to: devtunnel/win32-${arch}
       filter:
         - "**/*"
 linux:
@@ -55,6 +63,10 @@ linux:
   extraResources:
     - from: resources/cloudflared/linux-${arch}
       to: cloudflared/linux-${arch}
+      filter:
+        - "**/*"
+    - from: resources/devtunnel/linux-${arch}
+      to: devtunnel/linux-${arch}
       filter:
         - "**/*"
   desktop:

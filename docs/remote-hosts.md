@@ -70,8 +70,10 @@ Stopping the separate local CodeMux server does not close remote connections.
 
 ## Microsoft Dev Tunnels
 
-Install Microsoft's `devtunnel` CLI on the computer running the CodeMux server
-(`winget install Microsoft.devtunnel` on Windows). Select **Microsoft Dev Tunnels**
+Packaged CodeMux desktop builds bundle a pinned Microsoft `devtunnel` CLI binary
+automatically. Source checkouts and standalone Node server hosts look up `devtunnel`
+on `PATH` or WinGet (`winget install Microsoft.devtunnel` on Windows; `bun run update:devtunnel`
+downloads the bundled copy for desktop packaging). Select **Microsoft Dev Tunnels**
 in this computer's sharing settings, then enable it. Desktop and Node server hosts
 use the same provider; it forwards only the configured CodeMux Web port, including
 HTTP and WebSocket traffic. Cloudflare remains a separate choice. Only one sharing

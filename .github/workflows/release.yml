@@ -96,6 +96,11 @@ jobs:
           TARGET_ARCH: ${{ matrix.arch }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Download Dev Tunnels CLI binary
+        run: bun run update:devtunnel
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+
       - name: Build app
         run: bun run build
 
@@ -166,6 +171,9 @@ jobs:
         run: bun run update:cloudflared
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Dev Tunnels CLI binary
+        run: bun run update:devtunnel
 
       - name: Build app
         run: bun run build
