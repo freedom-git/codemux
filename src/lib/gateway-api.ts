@@ -481,6 +481,7 @@ class GatewayAPI {
     worktreeId?: string,
     projectId?: string | null,
     sourceId?: string,
+    useWorktree?: boolean,
   ): Promise<UnifiedSession> {
     return gatewayClient.createSession({
       engineType,
@@ -488,6 +489,7 @@ class GatewayAPI {
       worktreeId,
       ...(projectId !== undefined ? { projectId } : {}),
       ...(sourceId !== undefined ? { sourceId } : {}),
+      ...(typeof useWorktree === "boolean" ? { useWorktree } : {}),
     });
   }
 

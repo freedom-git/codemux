@@ -1476,6 +1476,7 @@ export class EngineManager extends EventEmitter {
     worktreeId?: string,
     projectId?: string | null,
     sourceId?: string,
+    useWorktree?: boolean,
   ): Promise<UnifiedSession> {
     if (engineType) engineType = this.resolveEngineType(engineType);
     if (sourceId !== undefined) {
@@ -1490,7 +1491,11 @@ export class EngineManager extends EventEmitter {
         const wt = worktreeManager.getWorktreeByName(resolvedProjectId, worktreeId);
         if (wt) sessionDir = wt.directory;
       }
-      const externalSession = await source.createSession(engineType, sessionDir);
+      const externalSession = await source.createSession(
+        engineType,
+        sessionDir,
+        typeof useWorktree === "boolean" ? { useWorktree } : undefined,
+      );
       const sourceAdapter = this.getAdapterOrThrow(externalSession.engineType);
       const snapshot = await this.refreshCatalog(sourceAdapter, true);
       const conv = conversationStore.findByEngineSession(externalSession.id, externalSession.engineType, snapshot.sourceId)

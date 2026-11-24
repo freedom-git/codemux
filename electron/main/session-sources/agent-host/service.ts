@@ -6,7 +6,7 @@ import type {
   ChatState, ChatSummary, SessionState, RootState, SessionConfigPropertySchema, ModelSelection, Message, ActionEnvelope,
 } from "@microsoft/agent-host-protocol";
 import type { SendMessageOptions, SessionBackendEvents } from "../../../../shared/session-backend";
-import type { SessionSource } from "../session-source";
+import type { CreateSessionSourceOptions, SessionSource } from "../session-source";
 import {
   formatContextWindowTokens,
   type ContextWindowOption,
@@ -109,6 +109,7 @@ interface Entry {
 }
 export interface AgentHostServiceOptions {
   enabled?: boolean;
+  isWorktreeEnabled?: () => boolean;
   knownSessions?: () => UnifiedSession[];
   persistEnabled?: (enabled: boolean) => Promise<void>;
   discover?: () => Promise<AgentHostEndpoint[]>;
@@ -540,7 +541,84 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     if (writable && entry.session.connection?.readOnly) throw new Error("This VS Code chat is read-only.");
     return { entry, host, chat: host.chats.get(entry.chatUri)! };
   }
-  async createSession(engineType: EngineType | undefined, directory: string): Promise<UnifiedSession> {
+  private selectHostForSession(
+    hosts: AgentHostConnection[],
+    provider: string,
+    directory?: string,
+  ): AgentHostConnection | undefined {
+    const eligible = hosts.filter(candidate => candidate.root?.agents.some(agent => agent.provider === provider));
+    if (eligible.length <= 1) return eligible[0];
+    const normalizedDir = directory
+      ? resolvePath(directory).replaceAll("\\", "/").replace(/\/+$/, "")
+      : undefined;
+    const normCmp = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+    const targetKey = normalizedDir ? normCmp(normalizedDir) : undefined;
+
+    const scoreHost = (candidate: AgentHostConnection): number => {
+      let matchesDirectory = false;
+      let sessionCount = 0;
+      for (const entry of this.entries.values()) {
+        if (entry.host !== candidate) continue;
+        sessionCount++;
+        if (targetKey && entry.session.directory) {
+          const entryKey = normCmp(entry.session.directory.replaceAll("\\", "/").replace(/\/+$/, ""));
+          if (entryKey === targetKey || entryKey.startsWith(`${targetKey}.worktrees/`)) {
+            matchesDirectory = true;
+          }
+        }
+      }
+      return (matchesDirectory ? 1_000_000 : 0)
+        + (candidate.endpoint.type === "standalone" ? 1_000 : 0)
+        + sessionCount;
+    };
+
+    return [...eligible].sort((a, b) => scoreHost(b) - scoreHost(a))[0];
+  }
+
+  private async resolveInitialSessionConfig(
+    host: AgentHostConnection,
+    provider: string,
+    workingDirectory: string | undefined,
+    useWorktree: boolean,
+  ): Promise<Record<string, unknown>> {
+    const desiredIsolation = useWorktree ? "worktree" : "folder";
+    try {
+      const resolved = await host.request("resolveSessionConfig", {
+        channel: ROOT,
+        provider,
+        ...(workingDirectory ? { workingDirectory } : {}),
+        config: { isolation: desiredIsolation },
+      });
+      const props = resolved?.schema?.properties;
+      const values = resolved?.values ?? {};
+      if (props?.target && !props?.isolation) {
+        const targetOptions = Array.isArray(props.target.enum) ? props.target.enum : [];
+        const canWorktree = useWorktree && targetOptions.includes("worktree");
+        const next: Record<string, unknown> = { target: canWorktree ? "worktree" : "workspace" };
+        if (canWorktree && typeof values.baseBranch === "string" && values.baseBranch) {
+          next.baseBranch = values.baseBranch;
+        }
+        return next;
+      }
+      const isolationOptions = Array.isArray(props?.isolation?.enum) ? props.isolation.enum : [];
+      const canWorktree = useWorktree && (isolationOptions.length === 0
+        ? values.isolation === "worktree"
+        : isolationOptions.includes("worktree"));
+      const next: Record<string, unknown> = { isolation: canWorktree ? "worktree" : "folder" };
+      if (canWorktree && typeof values.branch === "string" && values.branch) {
+        next.branch = values.branch;
+      }
+      return next;
+    } catch {
+      return { isolation: desiredIsolation };
+    }
+  }
+
+  async createSession(
+    engineType: EngineType | undefined,
+    directory: string,
+    options?: CreateSessionSourceOptions,
+  ): Promise<UnifiedSession> {
     if (!this.enabled) throw new Error("VS Code session sharing is disabled.");
     this.seed();
     let hosts = [...this.hosts.values()].filter(candidate => candidate.connected);
@@ -550,34 +628,42 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     }
     if (!hosts.length) throw new Error("VS Code is not connected. Open VS Code and enable sharing first.");
 
+    const trimmedDir = directory?.trim();
+    const resolvedDir = trimmedDir && trimmedDir !== "." ? resolvePath(trimmedDir) : undefined;
     const preferredProvider = engineType ? engineProvider(engineType) : undefined;
     let host: AgentHostConnection | undefined;
     let provider: string | undefined;
     if (preferredProvider) {
-      host = hosts.find(candidate => candidate.root?.agents.some(agent => agent.provider === preferredProvider));
+      host = this.selectHostForSession(hosts, preferredProvider, resolvedDir);
       if (host) provider = preferredProvider;
     }
     if (!host || !provider) {
-      for (const candidate of hosts) {
-        const supported = candidate.root?.agents.find(agent => providerEngine(agent.provider) !== undefined);
-        if (supported) {
-          host = candidate;
-          provider = supported.provider;
+      for (const candidateEngine of supportedEngines) {
+        const candidateProvider = engineProvider(candidateEngine);
+        if (!candidateProvider) continue;
+        const matched = this.selectHostForSession(hosts, candidateProvider, resolvedDir);
+        if (matched) {
+          host = matched;
+          provider = candidateProvider;
           break;
         }
       }
     }
     if (!host || !provider) throw new Error("No supported AI provider is available in VS Code.");
 
-    const trimmedDir = directory?.trim();
-    const workingDirectories = trimmedDir && trimmedDir !== "."
-      ? [pathToFileURL(resolvePath(trimmedDir)).href]
+    const workingDirectories = resolvedDir
+      ? [pathToFileURL(resolvedDir).href]
       : undefined;
+    const useWorktree = typeof options?.useWorktree === "boolean"
+      ? options.useWorktree
+      : this.options.isWorktreeEnabled?.() === true;
+    const config = await this.resolveInitialSessionConfig(host, provider, workingDirectories?.[0], useWorktree);
     const sessionUri = `ahp-session:/${randomUUID()}`;
     await host.request("createSession", {
       channel: sessionUri,
       provider,
       ...(workingDirectories ? { workingDirectories } : {}),
+      config,
     });
     this.createdSessions.add(sessionUri);
     await host.subscribe(sessionUri);

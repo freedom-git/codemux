@@ -1088,6 +1088,7 @@ export interface SessionCreateRequest {
   worktreeId?: string;
   projectId?: string | null;
   sourceId?: string;
+  useWorktree?: boolean;
 }
 
 export interface SessionArchiveRequest {

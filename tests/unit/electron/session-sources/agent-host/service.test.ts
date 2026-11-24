@@ -447,6 +447,75 @@ describe("AgentHostService", () => {
     expect(claudeServer.session.config?.values?.permissionMode).toBe("bypassPermissions");
     expect(claudeAdapter.getAllowAllPermissions(claudeId)).toBe(true);
   });
+
+  it("identifies as visual_studio_code/codemux and forwards worktree setting to VS Code createSession", async () => {
+    const server = await createAgentHostFixture("copilotcli");
+    cleanup.push(() => server.close());
+    let worktreeSetting = false;
+    const adapter = new AgentHostService({
+      enabled: true,
+      isWorktreeEnabled: () => worktreeSetting,
+      discover: async () => [server.endpoint],
+      pollMs: 100_000,
+    });
+    cleanup.push(() => adapter.stop());
+    await adapter.start();
+
+    const initReq = server.requests.find((r) => r.method === "initialize");
+    expect(initReq?.params?.clientInfo).toEqual({
+      name: "visual_studio_code/codemux",
+      title: "CodeMux",
+    });
+
+    // When worktree setting is OFF, createSession uses isolation: "folder" (no .worktrees)
+    const folderSession = await adapter.createSession("copilot", "/tmp/repo-alpha");
+    expect(folderSession.directory).toMatch(/repo-alpha$/);
+    const firstCreate = server.requests.filter((r) => r.method === "createSession").at(-1);
+    expect(firstCreate?.params?.config).toEqual({ isolation: "folder" });
+
+    // When worktree setting is ON on a Git repo, createSession uses isolation: "worktree" + default base branch
+    worktreeSetting = true;
+    const wtSession = await adapter.createSession("copilot", "/tmp/repo-alpha");
+    expect(wtSession.directory).toContain("repo-alpha.worktrees/created-branch");
+    const secondCreate = server.requests.filter((r) => r.method === "createSession").at(-1);
+    expect(secondCreate?.params?.config).toEqual({ isolation: "worktree", branch: "origin/main" });
+
+    // Explicit per-request override (e.g. mobile client setting) takes precedence
+    const overrideFolder = await adapter.createSession("copilot", "/tmp/repo-alpha", { useWorktree: false });
+    expect(overrideFolder.directory).toMatch(/repo-alpha$/);
+    const thirdCreate = server.requests.filter((r) => r.method === "createSession").at(-1);
+    expect(thirdCreate?.params?.config).toEqual({ isolation: "folder" });
+
+    // Non-git folder gracefully falls back to isolation: "folder" even when worktree is enabled
+    server.worktreeSupported = false;
+    const nonGitSession = await adapter.createSession("copilot", "/tmp/plain-folder", { useWorktree: true });
+    expect(nonGitSession.directory).toMatch(/plain-folder$/);
+    const fourthCreate = server.requests.filter((r) => r.method === "createSession").at(-1);
+    expect(fourthCreate?.params?.config).toEqual({ isolation: "folder" });
+  });
+
+  it("prefers the Agent Host instance that already owns sessions for the target directory or standalone host", async () => {
+    const emptyEditorHost = await createAgentHostFixture("copilotcli", "socket");
+    const activeStandaloneHost = await createAgentHostFixture("copilotcli", "tcp");
+    cleanup.push(() => emptyEditorHost.close());
+    cleanup.push(() => activeStandaloneHost.close());
+
+    const repoUri = "file:///tmp/my-target-repo";
+    Object.assign(activeStandaloneHost.session, { workingDirectories: [repoUri] });
+    Object.assign(activeStandaloneHost.chat, { workingDirectories: [repoUri] });
+
+    const adapter = new AgentHostService({
+      enabled: true,
+      discover: async () => [emptyEditorHost.endpoint, activeStandaloneHost.endpoint],
+      pollMs: 100_000,
+    });
+    cleanup.push(() => adapter.stop());
+    await adapter.start();
+
+    await adapter.createSession("copilot", "/tmp/my-target-repo", { useWorktree: false });
+    expect(emptyEditorHost.requests.filter((r) => r.method === "createSession")).toHaveLength(0);
+    expect(activeStandaloneHost.requests.filter((r) => r.method === "createSession")).toHaveLength(1);
+  });
 });
 
 describe("native projection", () => {

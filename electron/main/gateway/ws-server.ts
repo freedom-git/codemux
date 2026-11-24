@@ -454,7 +454,17 @@ export class GatewayServer {
           if (req?.projectId !== undefined && req.projectId !== null && !nonEmptyString(req.projectId)) {
             throw invalidCatalogParams("projectId must be a non-empty string or null");
           }
-          return this.engineManager.createSession(req.engineType, req.directory, req.worktreeId, req.projectId, req.sourceId);
+          const useWorktree = typeof req.useWorktree === "boolean"
+            ? req.useWorktree
+            : this.isWorktreeEnabled();
+          return this.engineManager.createSession(
+            req.engineType,
+            req.directory,
+            req.worktreeId,
+            req.projectId,
+            req.sourceId,
+            useWorktree,
+          );
         }
         if (req?.projectId !== undefined) {
           if (req.projectId !== null && !nonEmptyString(req.projectId)) throw invalidCatalogParams("projectId must be a non-empty string or null");

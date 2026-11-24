@@ -62,6 +62,8 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
     set rootConfig(value: RootState["config"] | undefined) { rootConfig = value; },
     models: [{ id: "test-model", name: "Test", provider }] as NonNullable<RootState["agents"][number]["models"]>,
     providers: [provider],
+    worktreeSupported: true,
+    defaultBaseBranch: "origin/main",
     unavailableSession: false,
     get connectionCount() { return clients.size; },
     rejectNext: false,
@@ -105,11 +107,37 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
           })
           .map(([resource, state]) => ({ resource, ...state })),
       ] });
+      else if (method === "resolveSessionConfig") {
+        const requestedIsolation = (params.config as Record<string, unknown> | undefined)?.isolation;
+        const canWorktree = Boolean(params.workingDirectory) && fixture.worktreeSupported;
+        const isolationEnum = canWorktree ? ["folder", "worktree"] : ["folder"];
+        const resolvedIsolation = requestedIsolation === "folder" || !canWorktree
+          ? "folder"
+          : "worktree";
+        result({
+          schema: {
+            type: "object",
+            properties: {
+              isolation: { type: "string", enum: isolationEnum, default: canWorktree ? "worktree" : "folder", readOnly: !canWorktree },
+              ...(canWorktree ? { branch: { type: "string", enum: [fixture.defaultBaseBranch], default: fixture.defaultBaseBranch } } : {}),
+            },
+          },
+          values: {
+            isolation: resolvedIsolation,
+            ...(canWorktree ? { branch: resolvedIsolation === "worktree" ? fixture.defaultBaseBranch : "main" } : {}),
+          },
+        });
+      }
       else if (method === "createSession") {
         const createdUri = String(params.channel);
         const createdChatUri = createdUri.replace("ahp-session:", "ahp-chat:");
         const createdProvider = typeof params.provider === "string" ? params.provider : provider;
-        const workingDirectories = Array.isArray(params.workingDirectories) ? params.workingDirectories as string[] : undefined;
+        const rawWorkingDirectories = Array.isArray(params.workingDirectories) ? params.workingDirectories as string[] : undefined;
+        const createConfig = params.config as Record<string, unknown> | undefined;
+        const useWorktree = fixture.worktreeSupported && createConfig?.isolation === "worktree";
+        const workingDirectories = rawWorkingDirectories?.map((uri) =>
+          useWorktree ? `${uri.replace(/\/+$/, "")}.worktrees/created-branch` : uri,
+        );
         extraChats.set(createdChatUri, {
           resource: createdChatUri,
           title: "New chat",

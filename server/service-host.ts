@@ -102,6 +102,7 @@ export function createServiceHost(
   }) : undefined;
   const agentHost = options.engines ? undefined : new AgentHostService({
       enabled: loadSettings().vscodeAgentHostEnabled === true,
+      isWorktreeEnabled: () => loadSettings().worktreeEnabled === true,
       persistEnabled: async enabled => { await saveSettings({ vscodeAgentHostEnabled: enabled }); },
       discover: () => {
         const paths = loadSettings().vscodeAgentHostUserDataPaths;

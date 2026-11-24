@@ -1860,7 +1860,8 @@ export default function Chat() {
     try {
       const defaultProject = sessionStore.projects.find(p => p.isDefault && !p.catalogSourceId);
       const dir = directory || defaultProject?.directory || sessionStore.projects.find((project) => !project.catalogSourceId)?.directory || ".";
-      const newSession = await gateway.createSession(engineType, dir, worktreeId, undefined, sourceId);
+      const useWorktree = sourceId ? (getSetting<boolean>("worktreeEnabled") ?? false) : undefined;
+      const newSession = await gateway.createSession(engineType, dir, worktreeId, undefined, sourceId, useWorktree);
       logger.debug("[NewSession] Created:", newSession);
       const actualEngineType = (newSession.engineType || engineType) as EngineType;
       if (newSession.catalogSourceId) {
@@ -2334,7 +2335,8 @@ export default function Chat() {
 
     try {
       // Creating a session in the directory will trigger project initialization
-      const newSession = await gateway.createSession(resolvedEngineType, directory, undefined, undefined, sourceId);
+      const useWorktree = sourceId ? (getSetting<boolean>("worktreeEnabled") ?? false) : undefined;
+      const newSession = await gateway.createSession(resolvedEngineType, directory, undefined, undefined, sourceId, useWorktree);
       logger.debug("[AddProject] Session created:", newSession);
       const actualEngineType = (newSession.engineType || resolvedEngineType) as EngineType;
 

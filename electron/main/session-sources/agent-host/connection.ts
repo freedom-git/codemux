@@ -111,7 +111,7 @@ export class AgentHostConnection {
       })().catch(() => this.close());
       const init = await client.request("initialize", {
         channel: ROOT, clientId: this.id, protocolVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
-        clientInfo: { name: "codemux", title: "CodeMux" }, initialSubscriptions: [ROOT],
+        clientInfo: { name: "visual_studio_code/codemux", title: "CodeMux" }, initialSubscriptions: [ROOT],
       });
       this.version = init.protocolVersion;
       for (const snapshot of init.snapshots) this.snapshot(snapshot);
