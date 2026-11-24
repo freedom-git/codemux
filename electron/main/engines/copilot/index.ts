@@ -206,6 +206,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
   private sessionModes = new Map<string, string>();
   private sessionReasoningEfforts = new Map<string, ReasoningEffort>();
   private sessionContextWindows = new Map<string, CopilotContextTier>();
+  private sessionAllowAllPermissions = new Map<string, boolean>();
   private sessionDirectories = new Map<string, string>();
   private sessionTitles?: Map<string, string>;
 
@@ -355,6 +356,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
       customModelInput: false,
       messageEnqueue: true,
       slashCommands: true,
+      allowAllPermissionsSupported: true,
       availableModes: this.getModes(),
       reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max"],
     };
@@ -408,6 +410,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
     this.subscribeToSessionEvents(sdkSession);
     this.activeSessions.set(sessionId, sdkSession);
     this.sessionModes.set(sessionId, mode);
+    this.sessionAllowAllPermissions.set(sessionId, true);
     this.sessionDirectories.set(sessionId, directory);
 
     const now = Date.now();
@@ -415,6 +418,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
       id: sessionId,
       engineType: this.engineType,
       directory: normalizedDir,
+      allowAllPermissions: true,
       time: { created: now, updated: now },
     };
 
@@ -464,6 +468,9 @@ export class CopilotSdkAdapter extends EngineAdapter {
     this.messageHistory.delete(sessionId);
     this.messageBuffers.delete(sessionId);
     this.sessionModes.delete(sessionId);
+    this.sessionReasoningEfforts.delete(sessionId);
+    this.sessionContextWindows.delete(sessionId);
+    this.sessionAllowAllPermissions.delete(sessionId);
     this.sessionDirectories.delete(sessionId);
     this.sessionTodos.delete(sessionId);
     this.allowedAlwaysKinds.delete(sessionId);
@@ -488,6 +495,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
       modelId?: string;
       reasoningEffort?: ReasoningEffort | null;
       contextWindow?: string | null;
+      allowAllPermissions?: boolean | null;
       directory?: string;
       /**
        * Internal flag: when true, skip creating and emitting the user message
@@ -535,6 +543,14 @@ export class CopilotSdkAdapter extends EngineAdapter {
           this.sessionContextWindows.delete(sessionId);
         }
         needsModelSwitch = true;
+      }
+    }
+
+    if (options?.allowAllPermissions !== undefined) {
+      if (options.allowAllPermissions === null) {
+        this.sessionAllowAllPermissions.delete(sessionId);
+      } else {
+        this.sessionAllowAllPermissions.set(sessionId, options.allowAllPermissions);
       }
     }
 
@@ -885,6 +901,31 @@ export class CopilotSdkAdapter extends EngineAdapter {
 
   override getContextWindow(sessionId: string): string | null {
     return this.sessionContextWindows.get(sessionId) ?? null;
+  }
+
+  override async setAllowAllPermissions(sessionId: string, enabled: boolean | null): Promise<void> {
+    if (enabled === null) {
+      this.sessionAllowAllPermissions.delete(sessionId);
+      return;
+    }
+    this.sessionAllowAllPermissions.set(sessionId, enabled);
+    if (enabled) {
+      for (const [permissionId, pending] of this.pendingPermissions) {
+        if (pending.permission.sessionId !== sessionId) continue;
+        const allowOpt = pending.permission.options.find(
+          (opt) => opt.type === "allow_always" || opt.type === "accept_always"
+            || opt.type === "allow_once" || opt.type === "accept_once",
+        );
+        pending.resolve(approvePermissionOnce());
+        this.pendingPermissions.delete(permissionId);
+        this.emit("permission.replied", { permissionId, optionId: allowOpt?.id ?? "allow_once" });
+      }
+    }
+  }
+
+  override getAllowAllPermissions(sessionId: string): boolean | null {
+    return this.sessionAllowAllPermissions.get(sessionId)
+      ?? ((this.sessionModes.get(sessionId) || "autopilot") === "autopilot");
   }
 
   private buildModelSwitchConfig(sessionId: string, modelId: string): {
@@ -2019,7 +2060,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
 
   private handlePermissionRequest(req: CopilotPermissionRequest, ctx: { sessionId: string }): Promise<PermissionRequestResult> {
     const sessionId = ctx.sessionId;
-    if ((this.sessionModes.get(sessionId) || "autopilot") === "autopilot") return Promise.resolve(approvePermissionOnce());
+    if (this.getAllowAllPermissions(sessionId)) return Promise.resolve(approvePermissionOnce());
     if (this.allowedAlwaysKinds.get(sessionId)?.has(req.kind)) return Promise.resolve(approvePermissionOnce());
 
     const permissionId = timeId("perm");

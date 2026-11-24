@@ -394,6 +394,7 @@ describe("AgentHostService", () => {
     const created = await adapter.createSession("opencode", "/tmp/new-vscode-project");
     expect(created.engineType).toBe("copilot");
     expect(created.directory).toContain("new-vscode-project");
+    expect(created.allowAllPermissions).toBe(true);
     expect(created.connection).toMatchObject({ source: "VS Code", executor: "VS Code", available: true });
 
     // Wait across background listSessions polls while the new session is still idle-provisional
@@ -409,6 +410,42 @@ describe("AgentHostService", () => {
     await adapter.sendMessage(created.id, [{ type: "text", text: "hello from CodeMux" }]);
     const createdChatUri = String(created.engineMeta?.ahpChat);
     expect(server.extraChats.get(createdChatUri)?.activeTurn?.message.text).toBe("hello from CodeMux");
+  });
+
+  it("reads and toggles Allow all permissions across copilotcli, claude, and codex VS Code sessions", async () => {
+    const { adapter, server, id } = await setup();
+    expect(adapter.getSessionCapabilities(id).allowAllPermissionsSupported).toBe(true);
+    expect(adapter.getAllowAllPermissions(id)).toBe(false);
+
+    await adapter.setAllowAllPermissions(id, true);
+    expect(server.session.config?.values?.autoApprove).toBe("autoApprove");
+    expect(adapter.getAllowAllPermissions(id)).toBe(true);
+    expect((await adapter.getSession(id))?.allowAllPermissions).toBe(true);
+
+    await adapter.setAllowAllPermissions(id, false);
+    expect(server.session.config?.values?.autoApprove).toBe("default");
+    expect(adapter.getAllowAllPermissions(id)).toBe(false);
+
+    // Claude provider uses permissionMode ("bypassPermissions" <-> "default")
+    const claudeServer = await createAgentHostFixture("claude");
+    cleanup.push(() => claudeServer.close());
+    claudeServer.session.config = {
+      schema: {
+        type: "object",
+        properties: {
+          permissionMode: { type: "string", enum: ["default", "acceptEdits", "plan", "auto", "bypassPermissions"], sessionMutable: true },
+        },
+      },
+      values: { permissionMode: "default" },
+    };
+    const claudeAdapter = new AgentHostService({ enabled: true, discover: async () => [claudeServer.endpoint], pollMs: 100_000 });
+    cleanup.push(() => claudeAdapter.stop());
+    await claudeAdapter.start();
+    const claudeId = (await claudeAdapter.listSessions("claude"))[0].id;
+    expect(claudeAdapter.getAllowAllPermissions(claudeId)).toBe(false);
+    await claudeAdapter.setAllowAllPermissions(claudeId, true);
+    expect(claudeServer.session.config?.values?.permissionMode).toBe("bypassPermissions");
+    expect(claudeAdapter.getAllowAllPermissions(claudeId)).toBe(true);
   });
 });
 

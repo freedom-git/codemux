@@ -96,6 +96,8 @@ export class HostRoutedAdapter extends EngineAdapter {
   getContextWindow(id: string) { return this.driver(id).getContextWindow(id); }
   setServiceTier(id: string, tier: CodexServiceTier | null) { return this.driver(id).setServiceTier(id, tier); }
   getServiceTier(id: string) { return this.driver(id).getServiceTier(id); }
+  setAllowAllPermissions(id: string, enabled: boolean | null) { return this.driver(id).setAllowAllPermissions(id, enabled); }
+  getAllowAllPermissions(id: string) { return this.driver(id).getAllowAllPermissions(id); }
   setSessionArchived(id: string, archived: boolean) { return this.driver(id).setSessionArchived(id, archived); }
   createProject(input: CatalogProjectInput) { return this.sdk.createProject(input); }
   updateProject(id: string, patch: CatalogProjectPatch) { return this.sdk.updateProject(id, patch); }

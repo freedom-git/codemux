@@ -112,6 +112,8 @@ export interface EngineCapabilities {
   slashCommands: boolean;
   /** Whether the engine supports Codex Fast mode (service tier) */
   fastModeSupported?: boolean;
+  /** Whether the session supports a simple "Allow all" tool-permission toggle */
+  allowAllPermissionsSupported?: boolean;
   /** Available agent modes */
   availableModes: AgentMode[];
 }
@@ -230,6 +232,7 @@ export interface UnifiedSessionConfig {
   reasoningEffort?: ReasoningEffort;
   contextWindow?: string;
   serviceTier?: CodexServiceTier;
+  allowAllPermissions?: boolean;
 }
 
 /**
@@ -1102,6 +1105,7 @@ export interface MessageSendRequest {
   reasoningEffort?: ReasoningEffort | null;
   contextWindow?: string | null;
   serviceTier?: CodexServiceTier | null;
+  allowAllPermissions?: boolean | null;
 }
 
 export interface MessagePromptContent {
@@ -1259,6 +1263,7 @@ export interface CommandInvokeRequest {
   reasoningEffort?: ReasoningEffort | null;
   contextWindow?: string | null;
   serviceTier?: CodexServiceTier | null;
+  allowAllPermissions?: boolean | null;
 }
 
 /** Result of a slash command invocation */

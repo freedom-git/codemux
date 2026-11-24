@@ -71,6 +71,7 @@ export class OpenCodeAdapter extends EngineAdapter {
 
   // Cached state
   private sessions = new Map<string, UnifiedSession>();
+  private sessionAllowAllPermissions = new Map<string, boolean>();
   private currentDirectory: string | null = null;
   private cachedCommands: EngineCommand[] = [];
 
@@ -584,6 +585,12 @@ export class OpenCodeAdapter extends EngineAdapter {
 
   private handlePermissionAsked(data: any): void {
     const permission = this.toUnifiedPermission(data);
+    if (permission.sessionId && this.getAllowAllPermissions(permission.sessionId)) {
+      void this.replyPermission(permission.id, { optionId: "always" }, permission.sessionId).catch((err) => {
+        openCodeLog.warn(`Auto-approving OpenCode permission ${permission.id} failed:`, err);
+      });
+      return;
+    }
     this.emit("permission.asked", { permission });
   }
 
@@ -829,6 +836,7 @@ export class OpenCodeAdapter extends EngineAdapter {
       customModelInput: false,
       messageEnqueue: true,
       slashCommands: true,
+      allowAllPermissionsSupported: true,
       availableModes: this.getModes(),
     };
   }
@@ -1248,6 +1256,18 @@ export class OpenCodeAdapter extends EngineAdapter {
 
   async setMode(_sessionId: string, _modeId: string): Promise<void> {
     // Mode is specified per-message via agent field
+  }
+
+  override async setAllowAllPermissions(sessionId: string, enabled: boolean | null): Promise<void> {
+    if (enabled === null) {
+      this.sessionAllowAllPermissions.delete(sessionId);
+      return;
+    }
+    this.sessionAllowAllPermissions.set(sessionId, enabled);
+  }
+
+  override getAllowAllPermissions(sessionId: string): boolean | null {
+    return this.sessionAllowAllPermissions.get(sessionId) ?? false;
   }
 
   // --- Permissions ---

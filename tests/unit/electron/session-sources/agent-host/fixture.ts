@@ -18,7 +18,16 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
   let session = {
     provider, title: "Native editor chat", status: 1, lifecycle: "ready", activeClients: [],
     chats: [{ resource: chatUri, title: "Native editor chat", status: 1, modifiedAt: now }], defaultChat: chatUri,
-    config: { schema: { type: "object", properties: { mode: { type: "string", enum: ["interactive", "plan"], sessionMutable: true } } }, values: { mode: "interactive" } },
+    config: {
+      schema: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["interactive", "plan"], sessionMutable: true, chatMutable: true },
+          autoApprove: { type: "string", enum: ["default", "assisted", "autoApprove"], sessionMutable: true, chatMutable: true },
+        },
+      },
+      values: { mode: "interactive", autoApprove: "default", availableApprovalModes: ["default", "assisted", "autoApprove"] },
+    },
   } as SessionState;
   let chat = { resource: chatUri, title: "Native editor chat", status: 1, modifiedAt: now, turns: [] } as ChatState;
   const extraChats = new Map<string, ChatState>();
@@ -118,6 +127,16 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
           ...(workingDirectories ? { workingDirectories } : {}),
           chats: [{ resource: createdChatUri, title: "New chat", status: 1, modifiedAt: now, ...(workingDirectories ? { workingDirectories } : {}) }],
           defaultChat: createdChatUri,
+          config: {
+            schema: {
+              type: "object",
+              properties: {
+                mode: { type: "string", enum: ["interactive", "plan"], sessionMutable: true, chatMutable: true },
+                autoApprove: { type: "string", enum: ["default", "assisted", "autoApprove"], sessionMutable: true, chatMutable: true },
+              },
+            },
+            values: { mode: "interactive", autoApprove: "default", availableApprovalModes: ["default", "assisted", "autoApprove"] },
+          },
         } as SessionState);
         result(null);
       }

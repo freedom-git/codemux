@@ -790,6 +790,9 @@ export interface LocaleDict {
     reasoningEffortDesc: string;
     contextWindow: string;
     contextWindowDesc: string;
+    permissions: string;
+    allowAllPermissions: string;
+    allowAllPermissionsDesc: string;
     fastMode: string;
     fastModeDesc: string;
     fastModeUnavailable: string;
@@ -1908,6 +1911,9 @@ export const en: LocaleDict = {
     reasoningEffortDesc: "Controls how much effort the model puts into reasoning",
     contextWindow: "Context Window",
     contextWindowDesc: "Selects the context window size for this model",
+    permissions: "Permissions",
+    allowAllPermissions: "Allow all",
+    allowAllPermissionsDesc: "Automatically approve all tool calls without asking",
     fastMode: "Fast Mode",
     fastModeDesc: "Higher speed inference at 2\u00d7 credit usage (Codex only)",
     fastModeUnavailable: "Fast mode requires ChatGPT authentication",

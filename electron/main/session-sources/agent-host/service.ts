@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { basename, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
-  ChatState, ChatSummary, SessionState, ModelSelection, Message, ActionEnvelope,
+  ChatState, ChatSummary, SessionState, RootState, SessionConfigPropertySchema, ModelSelection, Message, ActionEnvelope,
 } from "@microsoft/agent-host-protocol";
 import type { SendMessageOptions, SessionBackendEvents } from "../../../../shared/session-backend";
 import type { SessionSource } from "../session-source";
@@ -36,6 +36,65 @@ function nativeTierEffort(effort: ReasoningEffort): string {
 function isExternalCliSession(session: SessionState): boolean {
   const meta = session._meta as Record<string, unknown> | undefined;
   return meta?.["vscode.external"] === true && meta?.["ehcliAdoptable"] !== true;
+}
+
+interface ApprovalPropertyResolution {
+  key: string;
+  prop: SessionConfigPropertySchema;
+  supported: boolean;
+  active: boolean;
+  onValue: string;
+  offValue: string;
+}
+
+function resolveApprovalProperty(
+  session: SessionState,
+  chat: ChatSummary | ChatState,
+  root?: RootState,
+): ApprovalPropertyResolution | undefined {
+  const chatConfig = "config" in chat ? chat.config : undefined;
+  const schemaProps = chatConfig?.schema?.properties ?? session.config?.schema?.properties;
+  if (!schemaProps) return undefined;
+  const values = { ...session.config?.values, ...chatConfig?.values };
+  const policyRestricted = root?.config?.values?.autoApprovePolicyRestricted === true;
+  const isWritable = (prop: SessionConfigPropertySchema | undefined) =>
+    Boolean(prop && !prop.readOnly && (prop.sessionMutable || (chatConfig && prop.chatMutable)));
+
+  if (schemaProps.autoApprove) {
+    const prop = schemaProps.autoApprove;
+    const available = Array.isArray(values.availableApprovalModes) ? values.availableApprovalModes : prop.enum;
+    const supported = isWritable(prop) && !policyRestricted && (!available || available.includes("autoApprove"));
+    const active = !policyRestricted && (
+      values.autoApprove !== undefined
+        ? values.autoApprove === "autoApprove"
+        : values.effectiveApprovalMode === "autoApprove"
+    );
+    return { key: "autoApprove", prop, supported, active, onValue: "autoApprove", offValue: "default" };
+  }
+
+  if (schemaProps.approvalMode) {
+    const prop = schemaProps.approvalMode;
+    const available = Array.isArray(values.availableApprovalModes) ? values.availableApprovalModes : prop.enum;
+    const supported = isWritable(prop) && !policyRestricted && (!available || available.includes("allow-all"));
+    const active = !policyRestricted && values.approvalMode === "allow-all";
+    return { key: "approvalMode", prop, supported, active, onValue: "allow-all", offValue: "manual" };
+  }
+
+  if (schemaProps.permissionMode) {
+    const prop = schemaProps.permissionMode;
+    const supported = isWritable(prop) && (!prop.enum || prop.enum.includes("bypassPermissions"));
+    const active = values.permissionMode === "bypassPermissions";
+    return { key: "permissionMode", prop, supported, active, onValue: "bypassPermissions", offValue: "default" };
+  }
+
+  const codexPreset = schemaProps["codex.permissionsPreset"];
+  if (codexPreset) {
+    const supported = isWritable(codexPreset) && (!codexPreset.enum || codexPreset.enum.includes("full-access"));
+    const active = values["codex.permissionsPreset"] === "full-access";
+    return { key: "codex.permissionsPreset", prop: codexPreset, supported, active, onValue: "full-access", offValue: "default" };
+  }
+
+  return undefined;
 }
 interface Entry {
   provider: string;
@@ -100,7 +159,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     return { authoritativeSessionState: true, sourceScopedMessageIds: true, confirmedSessionRemoval: true, providerModelHierarchy: false,
       dynamicModes: true, messageCancellation: true, permissionAlways: false, imageAttachment: true,
       loadSession: true, listSessions: true, modelSwitchable: true, customModelInput: false,
-      messageEnqueue: true, slashCommands: false, availableModes: [],
+      messageEnqueue: true, slashCommands: false, allowAllPermissionsSupported: true, availableModes: [],
       reasoningEffortOptions: ["none", "low", "medium", "high", "xhigh", "max"] };
   }
   getSessionCapabilities(id: string): EngineCapabilities {
@@ -149,7 +208,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     return { source: "VS Code", origin: undefined, executor: "VS Code", shared: true, authoritative: true, localRemovalOnly: true,
       available: this.enabled && host?.connected === true, readOnly: !writable,
       models: [], modes: [],
-      capabilities: { ...this.getCapabilities(), imageAttachment: false, modelSwitchable: false, dynamicModes: false },
+      capabilities: { ...this.getCapabilities(), imageAttachment: false, modelSwitchable: false, dynamicModes: false, allowAllPermissionsSupported: false },
       sharingStatus: this.enabled ? host?.connected ? "connected" as const : "unavailable" as const : "disabled" as const,
       runtimeVersion: host?.version };
   }
@@ -329,6 +388,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     const modelEfforts = resolvedModelId
       ? models.find(candidate => candidate.modelId === resolvedModelId)?.capabilities?.supportedReasoningEfforts
       : undefined;
+    const approval = resolveApprovalProperty(session, chat, entry.host?.root);
     return { id, engineType: providerEngine(entry.provider)!, title: chat.resource === session.defaultChat ? session.title : chat.title,
       directory, projectId: scopedId(entry.source, directory), time: { created: entry.session.time?.created ?? updated, updated },
       connection: { ...this.connection(entry.host, (chat.interactivity === undefined || chat.interactivity === "full")
@@ -337,12 +397,14 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
         capabilities: { ...this.getCapabilities(), availableModes: modes,
           dynamicModes: !!(modeSchema?.chatMutable || modeSchema?.sessionMutable),
           modelSwitchable: models.length > 0, imageAttachment: selectedModel?.supportsVision === true,
+          allowAllPermissionsSupported: approval?.supported === true,
           reasoningEffortOptions: modelEfforts?.length ? modelEfforts : ["none", "low", "medium", "high", "xhigh", "max"],
         },
       },
       activityStatus: activity(chat.status), mode, modelId: resolvedModelId,
       reasoningEffort: unifiedEffort(effort),
       contextWindow: rawContextSize !== undefined && rawContextSize !== null ? String(rawContextSize) : undefined,
+      ...(approval ? { allowAllPermissions: approval.active } : {}),
       engineMeta: { ahpSource: entry.source, ahpSession: entry.sessionUri, ahpChat: entry.chatUri, ahpProvider: entry.provider },
     };
   }
@@ -534,6 +596,14 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     }
     await host.subscribe(chatUri);
     entry.attached = true;
+    const createdSession = host.sessions.get(sessionUri);
+    const createdChat = host.chats.get(chatUri);
+    if (createdSession && createdChat) {
+      const approval = resolveApprovalProperty(createdSession, createdChat, host.root);
+      if (approval?.supported && !approval.active) {
+        await this.dispatchConfigProperty(entry, host, createdSession, createdChat, approval.key, approval.prop, approval.onValue).catch(() => {});
+      }
+    }
     this.publishChat(entry);
     this.publishCatalog();
     return entry.session;
@@ -564,6 +634,9 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   async sendMessage(id: string, content: MessagePromptContent[], options?: SendMessageOptions) {
     const { entry, host, chat } = await this.attach(id, true);
     if (options?.mode && options.mode !== entry.session.mode) await this.setMode(id, options.mode);
+    if (typeof options?.allowAllPermissions === "boolean" && options.allowAllPermissions !== entry.session.allowAllPermissions) {
+      await this.setAllowAllPermissions(id, options.allowAllPermissions);
+    }
     const modelId = options?.modelId ?? chat.draft?.model?.id ?? entry.session.modelId;
     const previous = chat.draft?.model ?? chat.activeTurn?.message.model ?? chat.turns.at(-1)?.message.model;
     const model = modelId ? this.model(host, entry.provider, modelId, options?.reasoningEffort, previous, options?.contextWindow) : undefined;
@@ -701,14 +774,35 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
         model: this.model(host, entry.provider, modelId, undefined, chat.draft?.model) } });
     this.publishChat(entry);
   }
+  private async dispatchConfigProperty(
+    entry: Entry,
+    host: AgentHostConnection,
+    session: SessionState,
+    chat: ChatState,
+    key: string,
+    property: SessionConfigPropertySchema,
+    value: unknown,
+  ) {
+    const preferSessionConfig = (chat.resource === session.defaultChat || !chat.config) && Boolean(property.sessionMutable);
+    if (preferSessionConfig) {
+      await host.dispatch(entry.sessionUri, { type: "session/configChanged", config: { [key]: value } });
+      if (chat.config?.values && Object.prototype.hasOwnProperty.call(chat.config.values, key) && property.chatMutable) {
+        await host.dispatch(entry.chatUri, { type: "chat/configChanged", config: { [key]: value } });
+      }
+    } else if (chat.config && property.chatMutable) {
+      await host.dispatch(entry.chatUri, { type: "chat/configChanged", config: { [key]: value } });
+    } else if (property.sessionMutable) {
+      await host.dispatch(entry.sessionUri, { type: "session/configChanged", config: { [key]: value } });
+    } else {
+      throw new Error("Change this setting in VS Code.");
+    }
+  }
   async setMode(id: string, mode: string) {
     const { entry, host, chat } = await this.attach(id, true);
     const session = host.sessions.get(entry.sessionUri)!;
     const property = chat.config?.schema?.properties?.mode ?? session.config?.schema?.properties?.mode;
     if (!property || !property.enum?.includes(mode)) throw new Error("This mode is not available in VS Code.");
-    if (property.chatMutable) await host.dispatch(entry.chatUri, { type: "chat/configChanged", config: { mode } });
-    else if (property.sessionMutable) await host.dispatch(entry.sessionUri, { type: "session/configChanged", config: { mode } });
-    else throw new Error("Change this mode in VS Code.");
+    await this.dispatchConfigProperty(entry, host, session, chat, "mode", property, mode);
     this.publishChat(entry);
   }
   async setReasoningEffort(id: string, effort: ReasoningEffort | null) {
@@ -731,6 +825,25 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     this.publishChat(entry);
   }
   getContextWindow(id: string) { return this.entries.get(id)?.session.contextWindow ?? null; }
+  async setAllowAllPermissions(id: string, enabled: boolean | null) {
+    const { entry, host, chat } = await this.attach(id, true);
+    const session = host.sessions.get(entry.sessionUri)!;
+    const approval = resolveApprovalProperty(session, chat, host.root);
+    if (!approval || !approval.supported) {
+      throw new Error("Allow all permissions is not available for this VS Code session.");
+    }
+    const nextValue = enabled ? approval.onValue : approval.offValue;
+    await this.dispatchConfigProperty(entry, host, session, chat, approval.key, approval.prop, nextValue);
+    if (enabled === true) {
+      for (const pending of this.getPendingPermissions(id)) {
+        const allowOpt = pending.options.find(opt => opt.type === "allow_once" || opt.type === "accept_once" || opt.type === "allow_always" || opt.type === "accept_always");
+        if (allowOpt) await this.replyPermission(pending.id, { optionId: allowOpt.id }, id).catch(() => {});
+      }
+    }
+    this.publishChat(entry);
+    this.publishCatalog();
+  }
+  getAllowAllPermissions(id: string) { return this.entries.get(id)?.session.allowAllPermissions ?? null; }
   getPendingPermissions(id?: string) { return [...this.permissions.values()].filter(route => !id || route.permission.sessionId === id).map(route => route.permission); }
   getPendingQuestions(id?: string) { return [...this.questions.values()].filter(route => !id || route.question.sessionId === id).map(route => route.question); }
   async replyPermission(permissionId: string, reply: PermissionReply, sessionId?: string) {

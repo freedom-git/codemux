@@ -16,12 +16,15 @@ interface SessionControlsProps {
   selectedEffort: ReasoningEffort | null;
   contextWindowOptions?: ContextWindowOption[];
   selectedContextWindow?: string | null;
+  allowAllSupported?: boolean;
+  allowAllActive?: boolean;
   fastModeSupported: boolean;
   serviceTier: CodexServiceTier | null;
   scopeHint: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   onContextWindowChange?: (contextWindowId: string) => void;
+  onAllowAllToggle?: (nextActive: boolean) => void;
   onFastModeToggle: (nextActive: boolean) => void;
 }
 
@@ -94,6 +97,7 @@ export function SessionControls(props: SessionControlsProps) {
   });
 
   const fastActive = createMemo(() => props.serviceTier === "fast");
+  const allowAllActive = createMemo(() => props.allowAllActive === true);
 
   const summary = createMemo(() => {
     const parts = [modelLabel()];
@@ -103,6 +107,13 @@ export function SessionControls(props: SessionControlsProps) {
     if (contextLabel) parts.push(contextLabel);
     if (props.fastModeSupported && fastActive()) parts.push(t().engine.fastMode);
     return parts.join(" · ");
+  });
+
+  const tooltipSummary = createMemo(() => {
+    if (props.allowAllSupported && allowAllActive()) {
+      return `${summary()} · ${t().engine.allowAllPermissions}`;
+    }
+    return summary();
   });
 
   const updatePosition = () => {
@@ -165,14 +176,14 @@ export function SessionControls(props: SessionControlsProps) {
       <button
         ref={triggerRef}
         type="button"
-        class={`inline-flex h-7 max-w-[56vw] items-center gap-2 rounded-full border px-2.5 text-[11px] font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-600 ${
+        class={`inline-flex h-7 max-w-[68vw] sm:max-w-[420px] items-center gap-2 rounded-full border px-2.5 text-[11px] font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-600 ${
           open()
             ? "border-slate-300 bg-white text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
             : "border-slate-200/80 bg-white/50 text-slate-500 hover:border-slate-300 hover:bg-white dark:border-slate-700/80 dark:bg-slate-800/40 dark:text-slate-400 dark:hover:border-slate-600 dark:hover:bg-slate-800"
         }`}
         aria-haspopup="dialog"
         aria-expanded={open() ? "true" : "false"}
-        title={summary()}
+        title={tooltipSummary()}
         onClick={toggleOpen}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -187,6 +198,21 @@ export function SessionControls(props: SessionControlsProps) {
           <path d="M10 17h4" />
         </svg>
         <span class="min-w-0 truncate">{summary()}</span>
+        <Show when={props.allowAllSupported && allowAllActive()}>
+          <svg
+            class="h-3.5 w-3.5 shrink-0 text-emerald-500 dark:text-emerald-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </Show>
         <svg class="h-3 w-3 shrink-0 text-slate-400 dark:text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="m6 9 6 6 6-6" />
         </svg>
@@ -269,6 +295,47 @@ export function SessionControls(props: SessionControlsProps) {
                       }}
                     </For>
                   </div>
+                </SettingRow>
+              </Show>
+
+              <Show when={props.allowAllSupported}>
+                <SettingRow label={t().engine.permissions} description={t().engine.allowAllPermissionsDesc}>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={allowAllActive() ? "true" : "false"}
+                    data-testid="session-allow-all-switch"
+                    class={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left text-[12px] transition-colors ${
+                      allowAllActive()
+                        ? "border-emerald-200 bg-emerald-50/80 text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-200"
+                        : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-800"
+                    }`}
+                    onClick={() => props.onAllowAllToggle?.(!allowAllActive())}
+                  >
+                    <span class="inline-flex items-center gap-2 font-medium">
+                      <svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        <Show when={allowAllActive()}>
+                          <path d="m9 12 2 2 4-4" />
+                        </Show>
+                      </svg>
+                      <span>{t().engine.allowAllPermissions}</span>
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      class={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                        allowAllActive()
+                          ? "bg-emerald-500 dark:bg-emerald-500"
+                          : "bg-slate-300 dark:bg-slate-600"
+                      }`}
+                    >
+                      <span
+                        class={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                          allowAllActive() ? "translate-x-[18px]" : "translate-x-[3px]"
+                        }`}
+                      />
+                    </span>
+                  </button>
                 </SettingRow>
               </Show>
 

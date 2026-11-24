@@ -10,6 +10,7 @@ export interface SendMessageOptions {
   reasoningEffort?: ReasoningEffort | null;
   contextWindow?: string | null;
   serviceTier?: CodexServiceTier | null;
+  allowAllPermissions?: boolean | null;
   directory?: string;
 }
 

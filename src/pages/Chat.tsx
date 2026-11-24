@@ -556,6 +556,28 @@ export default function Chat() {
     currentCapabilities()?.fastModeSupported === true,
   );
 
+  const currentAllowAllSupported = createMemo(() =>
+    currentCapabilities()?.allowAllPermissionsSupported === true,
+  );
+
+  const currentSessionAllowAllPermissions = createMemo(() => {
+    const info = currentSessionInfo();
+    if (typeof info?.allowAllPermissions === "boolean") {
+      return info.allowAllPermissions;
+    }
+    if (info?.connection?.authoritative) {
+      return false;
+    }
+    const mode = info?.mode;
+    if (mode === "bypassPermissions" || mode === "full-access" || mode === "autopilot") {
+      return true;
+    }
+    if (mode === "default" || mode === "manual" || mode === "acceptEdits" || mode === "read-only" || mode === "auto") {
+      return false;
+    }
+    return currentEngineType() === "copilot" || currentEngineType() === "claude";
+  });
+
   const currentDraft = createMemo(() => {
     const sid = sessionStore.current;
     return sid ? getInputDraft(sid) : emptyDraft();
@@ -625,6 +647,9 @@ export default function Chat() {
 
   const handleSessionFastModeToggle = (nextActive: boolean) =>
     handleSessionConfigChange({ serviceTier: nextActive ? "fast" : "flex" });
+
+  const handleSessionAllowAllToggle = (nextActive: boolean) =>
+    handleSessionConfigChange({ allowAllPermissions: nextActive });
 
   const updateCurrentDraft = (patch: { text?: string; images?: ImageAttachment[] }) => {
     const sessionId = sessionStore.current;
@@ -2620,6 +2645,9 @@ export default function Chat() {
               ...(Object.prototype.hasOwnProperty.call(updated, "serviceTier") && {
                 serviceTier: updated.serviceTier,
               }),
+              ...(Object.prototype.hasOwnProperty.call(updated, "allowAllPermissions") && {
+                allowAllPermissions: updated.allowAllPermissions,
+              }),
               ...(updated.time && {
                 createdAt: new Date(updated.time.created).toISOString(),
                 updatedAt: new Date(updated.time.updated).toISOString(),
@@ -2860,6 +2888,7 @@ export default function Chat() {
     const reasoningEffort = currentSessionReasoningEffort();
     const contextWindow = currentSessionContextWindow();
     const serviceTier = currentSessionServiceTier();
+    const allowAllPermissions = currentAllowAllSupported() ? currentSessionAllowAllPermissions() : undefined;
     const commandText = args ? `/${commandName} ${args}` : `/${commandName}`;
     const tempMessageId = `msg-temp-${Date.now()}`;
     const tempPartId = `part-temp-${Date.now()}`;
@@ -2896,6 +2925,7 @@ export default function Chat() {
         reasoningEffort,
         contextWindow,
         serviceTier,
+        allowAllPermissions,
       });
       // Check if assistant message is finalized
       const msgs = messageStore.message[sessionId] || [];
@@ -2954,6 +2984,7 @@ export default function Chat() {
     const reasoningEffort = currentSessionReasoningEffort();
     const contextWindow = currentSessionContextWindow();
     const serviceTier = currentSessionServiceTier();
+    const allowAllPermissions = currentAllowAllSupported() ? currentSessionAllowAllPermissions() : undefined;
     const tempMessageId = `msg-temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const tempPartId = `part-temp-${Date.now()}`;
 
@@ -2987,6 +3018,7 @@ export default function Chat() {
         reasoningEffort,
         contextWindow,
         serviceTier,
+        allowAllPermissions,
       }).catch((error) => {
         logger.error("[SendMessage] Failed to enqueue message:", error);
         notifySendFailure(error);
@@ -3068,6 +3100,7 @@ export default function Chat() {
         reasoningEffort,
         contextWindow,
         serviceTier,
+        allowAllPermissions,
       });
       // sendMessage RPC resolved — the engine considers the prompt handled.
       // However, in multi-step agent loops (e.g. OpenCode), the RPC may resolve
@@ -3790,12 +3823,15 @@ export default function Chat() {
                             selectedEffort={currentSessionReasoningEffort() ?? null}
                             contextWindowOptions={currentContextWindowOptions()}
                             selectedContextWindow={currentSessionContextWindow()}
+                            allowAllSupported={currentAllowAllSupported()}
+                            allowAllActive={currentSessionAllowAllPermissions()}
                             fastModeSupported={currentFastModeSupported()}
                             serviceTier={currentSessionServiceTier()}
                             scopeHint={t().chat.sessionScopeHint}
                             onModelChange={handleSessionModelChange}
                             onReasoningEffortChange={handleSessionReasoningEffortChange}
                             onContextWindowChange={handleSessionContextWindowChange}
+                            onAllowAllToggle={handleSessionAllowAllToggle}
                             onFastModeToggle={handleSessionFastModeToggle}
                           />
                         </Show>

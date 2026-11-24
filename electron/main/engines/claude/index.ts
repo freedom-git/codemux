@@ -321,6 +321,7 @@ export class ClaudeCodeAdapter extends EngineAdapter {
   private cachedModels: UnifiedModelInfo[] = [];
   private sessionModes = new Map<string, PermissionMode>();
   private sessionReasoningEfforts = new Map<string, ReasoningEffort>();
+  private sessionAllowAllPermissions = new Map<string, boolean>();
 
   // --- Session directory cache (used instead of external store lookups) ---
   private sessionDirectories = new Map<string, string>();
@@ -633,6 +634,7 @@ export class ClaudeCodeAdapter extends EngineAdapter {
       customModelInput: true,
       messageEnqueue: true,
       slashCommands: true,
+      allowAllPermissionsSupported: true,
       availableModes: this.getModes(),
       reasoningEffortOptions: [...CLAUDE_REASONING_EFFORT_VALUES],
     };
@@ -1417,6 +1419,11 @@ export class ClaudeCodeAdapter extends EngineAdapter {
     const permissionMode = toClaudePermissionMode(modeId);
     const previousMode = this.sessionModes.get(sessionId);
     this.sessionModes.set(sessionId, permissionMode);
+    if (permissionMode === "bypassPermissions") {
+      this.sessionAllowAllPermissions.set(sessionId, true);
+    } else if (permissionMode !== "plan") {
+      this.sessionAllowAllPermissions.set(sessionId, false);
+    }
     claudeLog.info(`[Claude][${sessionId}] Mode set to: ${permissionMode}`);
 
     const v2Info = this.v2Sessions.get(sessionId);
@@ -1488,6 +1495,33 @@ export class ClaudeCodeAdapter extends EngineAdapter {
 
   override getReasoningEffort(sessionId: string): ReasoningEffort | null {
     return this.sessionReasoningEfforts.get(sessionId) ?? null;
+  }
+
+  override async setAllowAllPermissions(sessionId: string, enabled: boolean | null): Promise<void> {
+    if (enabled === null) {
+      this.sessionAllowAllPermissions.delete(sessionId);
+      return;
+    }
+    this.sessionAllowAllPermissions.set(sessionId, enabled);
+    const currentMode = toClaudePermissionMode(this.sessionModes.get(sessionId));
+    if (enabled && currentMode !== "bypassPermissions" && currentMode !== "plan") {
+      await this.setMode(sessionId, "bypassPermissions");
+    } else if (!enabled && currentMode === "bypassPermissions") {
+      await this.setMode(sessionId, "default");
+    }
+    if (enabled) {
+      for (const [permissionId, pending] of this.pendingPermissions) {
+        if (pending.permission.sessionId !== sessionId) continue;
+        this.pendingPermissions.delete(permissionId);
+        pending.resolve({ behavior: "allow", updatedInput: pending.input });
+        this.emit("permission.replied", { permissionId, optionId: "allow_once" });
+      }
+    }
+  }
+
+  override getAllowAllPermissions(sessionId: string): boolean | null {
+    return this.sessionAllowAllPermissions.get(sessionId)
+      ?? (toClaudePermissionMode(this.sessionModes.get(sessionId)) === "bypassPermissions");
   }
 
   // ==========================================================================
@@ -1588,6 +1622,10 @@ export class ClaudeCodeAdapter extends EngineAdapter {
       toolUseID: string;
     },
   ): Promise<PermissionResult> {
+    if (this.getAllowAllPermissions(sessionId)) {
+      return Promise.resolve({ behavior: "allow", updatedInput: input });
+    }
+
     const permissionId = timeId("perm");
 
     const normalizedTool = normalizeToolName("claude", toolName);

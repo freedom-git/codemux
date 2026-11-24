@@ -499,6 +499,7 @@ export class GatewayServer {
           reasoningEffort: req.reasoningEffort,
           contextWindow: typeof req.contextWindow === "string" || req.contextWindow === null ? req.contextWindow : undefined,
           serviceTier: isCodexServiceTier(req.serviceTier) ? req.serviceTier : undefined,
+          allowAllPermissions: typeof req.allowAllPermissions === "boolean" || req.allowAllPermissions === null ? req.allowAllPermissions : undefined,
         });
       }
 
@@ -550,6 +551,14 @@ export class GatewayServer {
             throw Object.assign(
               new Error(`Invalid serviceTier: ${JSON.stringify(config.serviceTier)}`),
               { code: "INVALID_SERVICE_TIER" },
+            );
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(config, "allowAllPermissions") && config.allowAllPermissions !== null) {
+          if (typeof config.allowAllPermissions !== "boolean") {
+            throw Object.assign(
+              new Error(`Invalid allowAllPermissions: ${JSON.stringify(config.allowAllPermissions)}`),
+              { code: "INVALID_ALLOW_ALL_PERMISSIONS" },
             );
           }
         }
@@ -710,6 +719,7 @@ export class GatewayServer {
           reasoningEffort: req.reasoningEffort,
           contextWindow: typeof req.contextWindow === "string" || req.contextWindow === null ? req.contextWindow : undefined,
           serviceTier: isCodexServiceTier(req.serviceTier) ? req.serviceTier : undefined,
+          allowAllPermissions: typeof req.allowAllPermissions === "boolean" || req.allowAllPermissions === null ? req.allowAllPermissions : undefined,
         });
       }
 

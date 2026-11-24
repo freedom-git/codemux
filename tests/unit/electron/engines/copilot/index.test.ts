@@ -1588,6 +1588,37 @@ describe("CopilotSdkAdapter", () => {
       expect(permEvents[1].permission.kind).toBe("edit");
       expect(permEvents[2].permission.kind).toBe("other");
     });
+
+    it("supports toggling setAllowAllPermissions independent of session mode and auto-resolves pending requests", async () => {
+      const permEvents: any[] = [];
+      const repliedEvents: any[] = [];
+      adapter.on("permission.asked", (e) => permEvents.push(e));
+      adapter.on("permission.replied", (e) => repliedEvents.push(e));
+
+      // Even in autopilot mode, turning off Allow all prompts for permission
+      (adapter as any).sessionModes.set("s1", "autopilot");
+      await adapter.setAllowAllPermissions("s1", false);
+      expect(adapter.getAllowAllPermissions("s1")).toBe(false);
+
+      const pendingPromise = (adapter as any).handlePermissionRequest(
+        { kind: "shell", toolCallId: "t-shell-1" },
+        { sessionId: "s1" },
+      );
+      await Promise.resolve();
+      expect(permEvents).toHaveLength(1);
+
+      // Turning Allow all back on auto-resolves the pending permission and approves subsequent calls even in interactive mode
+      (adapter as any).sessionModes.set("s1", "interactive");
+      await adapter.setAllowAllPermissions("s1", true);
+      await expect(pendingPromise).resolves.toEqual({ kind: "approve-once" });
+      expect(repliedEvents).toHaveLength(1);
+
+      const nextResult = await (adapter as any).handlePermissionRequest(
+        { kind: "write", toolCallId: "t-write-2" },
+        { sessionId: "s1" },
+      );
+      expect(nextResult).toEqual({ kind: "approve-once" });
+    });
   });
 
   describe("replyPermission()", () => {

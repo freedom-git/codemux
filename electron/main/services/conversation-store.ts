@@ -866,6 +866,7 @@ class ConversationStore {
       reasoningEffort?: ReasoningEffort | null;
       contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
+      allowAllPermissions?: boolean | null;
     },
   ): ConversationMeta | null {
     id = this.resolveConversationId(id);
@@ -910,6 +911,14 @@ class ConversationStore {
       const nextTier = patch.serviceTier ?? undefined;
       if (conv.serviceTier !== nextTier) {
         conv.serviceTier = nextTier;
+        changed = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "allowAllPermissions")) {
+      const nextAllowAll = patch.allowAllPermissions ?? undefined;
+      if (conv.allowAllPermissions !== nextAllowAll) {
+        conv.allowAllPermissions = nextAllowAll;
         changed = true;
       }
     }

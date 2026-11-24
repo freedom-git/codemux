@@ -93,6 +93,7 @@ function convToSession(conv: ConversationMeta): UnifiedSession {
     reasoningEffort: conv.reasoningEffort,
     contextWindow: conv.contextWindow,
     serviceTier: conv.serviceTier,
+    ...(typeof conv.allowAllPermissions === "boolean" ? { allowAllPermissions: conv.allowAllPermissions } : {}),
     ...(typeof conv.archived === "boolean" ? { archived: conv.archived } : {}),
     worktreeId: conv.worktreeId,
     projectId: conv.catalogSourceId ? conv.projectId ?? null : `dir-${projectDir}`,
@@ -511,7 +512,7 @@ export class EngineManager extends EventEmitter {
       return;
     }
     const fields: Partial<UnifiedSession> = { ...this.authoritativeLiveFields.get(conversationId) };
-    for (const key of ["mode", "modelId", "reasoningEffort", "contextWindow", "serviceTier", "activityStatus", "connection"] as const) {
+    for (const key of ["mode", "modelId", "reasoningEffort", "contextWindow", "serviceTier", "allowAllPermissions", "activityStatus", "connection"] as const) {
       if (Object.prototype.hasOwnProperty.call(session, key)) Object.assign(fields, { [key]: session[key] });
     }
     this.authoritativeLiveFields.set(conversationId, fields);
@@ -838,6 +839,7 @@ export class EngineManager extends EventEmitter {
           || Object.prototype.hasOwnProperty.call(data.session, "reasoningEffort")
           || Object.prototype.hasOwnProperty.call(data.session, "contextWindow")
           || Object.prototype.hasOwnProperty.call(data.session, "serviceTier")
+          || Object.prototype.hasOwnProperty.call(data.session, "allowAllPermissions")
         ) {
           conversationStore.updateSessionConfig(convId, {
             ...(Object.prototype.hasOwnProperty.call(data.session, "mode") ? { mode: data.session.mode ?? null } : {}),
@@ -850,6 +852,9 @@ export class EngineManager extends EventEmitter {
               : {}),
             ...(Object.prototype.hasOwnProperty.call(data.session, "serviceTier")
               ? { serviceTier: data.session.serviceTier ?? null }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(data.session, "allowAllPermissions")
+              ? { allowAllPermissions: data.session.allowAllPermissions ?? null }
               : {}),
           });
         }
@@ -922,6 +927,25 @@ export class EngineManager extends EventEmitter {
           // Also store sessionId so adapters can resolve correct directory
           const permSid = data?.permission?.sessionId || data?.sessionId;
           if (permSid) this.permissionSessionMap.set(data.permission.id, permSid);
+
+          // Auto-approve when the session has "Allow all" permissions enabled
+          if (permSid) {
+            const convId = this.resolveConversationId(permSid, adapter.engineType);
+            const conv = convId ? conversationStore.get(convId) : undefined;
+            if (conv?.allowAllPermissions === true && Array.isArray(data.permission.options)) {
+              const allowOpt = data.permission.options.find(
+                (opt: { type?: string }) =>
+                  opt.type === "allow_always" || opt.type === "accept_always"
+                  || opt.type === "allow_once" || opt.type === "accept_once",
+              );
+              if (allowOpt) {
+                void adapter.replyPermission(data.permission.id, { optionId: allowOpt.id }, permSid).catch((err) => {
+                  engineManagerLog.warn(`Auto-approving permission ${data.permission.id} failed:`, err);
+                });
+                return;
+              }
+            }
+          }
         }
         // Track question → engine mapping for routing replies
         if (event === "question.asked" && data?.question?.id) {
@@ -1797,6 +1821,7 @@ export class EngineManager extends EventEmitter {
       reasoningEffort?: ReasoningEffort | null;
       contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
+      allowAllPermissions?: boolean | null;
     },
   ): {
     mode?: string;
@@ -1804,6 +1829,7 @@ export class EngineManager extends EventEmitter {
     reasoningEffort?: ReasoningEffort | null;
     contextWindow?: string | null;
     serviceTier?: CodexServiceTier | null;
+    allowAllPermissions?: boolean | null;
   } {
     const hasExplicitReasoningEffort = options != null
       && Object.prototype.hasOwnProperty.call(options, "reasoningEffort");
@@ -1811,6 +1837,8 @@ export class EngineManager extends EventEmitter {
       && Object.prototype.hasOwnProperty.call(options, "contextWindow");
     const hasExplicitServiceTier = options != null
       && Object.prototype.hasOwnProperty.call(options, "serviceTier");
+    const hasExplicitAllowAll = options != null
+      && Object.prototype.hasOwnProperty.call(options, "allowAllPermissions");
 
     return {
       mode: options?.mode ?? conv.mode,
@@ -1824,6 +1852,9 @@ export class EngineManager extends EventEmitter {
       serviceTier: hasExplicitServiceTier
         ? (options?.serviceTier ?? null)
         : (conv.serviceTier ?? undefined),
+      allowAllPermissions: hasExplicitAllowAll
+        ? (options?.allowAllPermissions ?? null)
+        : (conv.allowAllPermissions ?? undefined),
     };
   }
 
@@ -1835,6 +1866,7 @@ export class EngineManager extends EventEmitter {
       reasoningEffort?: ReasoningEffort | null;
       contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
+      allowAllPermissions?: boolean | null;
     },
   ): ConversationMeta {
     const conv = conversationStore.updateSessionConfig(sessionId, patch);
@@ -1865,7 +1897,7 @@ export class EngineManager extends EventEmitter {
   async sendMessage(
     sessionId: string,
     content: MessagePromptContent[],
-    options?: { clientMessageId?: string; mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null },
+    options?: { clientMessageId?: string; mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null; allowAllPermissions?: boolean | null },
   ): Promise<UnifiedMessage> {
     sessionId = conversationStore.resolveConversationId(sessionId);
     const trackQueuedTiming = this.markSessionActive(sessionId);
@@ -2192,7 +2224,7 @@ export class EngineManager extends EventEmitter {
     sessionId: string,
     commandName: string,
     args: string,
-    options?: { mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null },
+    options?: { mode?: string; modelId?: string; reasoningEffort?: ReasoningEffort | null; contextWindow?: string | null; serviceTier?: CodexServiceTier | null; allowAllPermissions?: boolean | null },
   ): Promise<CommandInvokeResult> {
     sessionId = conversationStore.resolveConversationId(sessionId);
     const trackQueuedTiming = this.markSessionActive(sessionId);
@@ -2278,6 +2310,7 @@ export class EngineManager extends EventEmitter {
       reasoningEffort?: ReasoningEffort | null;
       contextWindow?: string | null;
       serviceTier?: CodexServiceTier | null;
+      allowAllPermissions?: boolean | null;
     } = {};
 
     if (Object.prototype.hasOwnProperty.call(config, "mode")) {
@@ -2294,6 +2327,9 @@ export class EngineManager extends EventEmitter {
     }
     if (Object.prototype.hasOwnProperty.call(config, "serviceTier")) {
       patch.serviceTier = config.serviceTier ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, "allowAllPermissions")) {
+      patch.allowAllPermissions = config.allowAllPermissions ?? null;
     }
 
     const existing = conversationStore.get(sessionId);
@@ -2319,6 +2355,34 @@ export class EngineManager extends EventEmitter {
     const adapter = this.getAdapterForSession(sessionId);
     const engineSessionId = conv.engineSessionId;
     await this.applySessionConfig(adapter, engineSessionId, config);
+
+    // Sync coupled state (e.g. Claude/Codex mode <-> allowAllPermissions)
+    const syncedPatch: { mode?: string | null; allowAllPermissions?: boolean | null } = {};
+    const adapterAllowAll = adapter.getAllowAllPermissions(engineSessionId);
+    if (adapterAllowAll !== null && adapterAllowAll !== conv.allowAllPermissions) {
+      syncedPatch.allowAllPermissions = adapterAllowAll;
+    }
+    const updatedSession = await adapter.getSession(engineSessionId).catch(() => null);
+    if (updatedSession?.mode && updatedSession.mode !== conv.mode) {
+      syncedPatch.mode = updatedSession.mode;
+    }
+    if (Object.keys(syncedPatch).length > 0) {
+      this.updateStoredSessionConfig(sessionId, syncedPatch);
+    }
+
+    // Auto-approve any pending permissions queued in EngineManager when Allow All is enabled
+    if (config.allowAllPermissions === true) {
+      const pending = await Promise.resolve(adapter.getPendingPermissions(engineSessionId)).catch(() => []);
+      for (const perm of pending) {
+        const allowOpt = perm.options.find(
+          (opt) => opt.type === "allow_always" || opt.type === "accept_always"
+            || opt.type === "allow_once" || opt.type === "accept_once",
+        );
+        if (allowOpt) {
+          void adapter.replyPermission(perm.id, { optionId: allowOpt.id }, engineSessionId).catch(() => {});
+        }
+      }
+    }
   }
 
   private async applySessionConfig(adapter: EngineAdapter, engineSessionId: string, config: SessionConfigPatch): Promise<void> {
@@ -2336,6 +2400,9 @@ export class EngineManager extends EventEmitter {
     }
     if (Object.prototype.hasOwnProperty.call(config, "serviceTier")) {
       await adapter.setServiceTier(engineSessionId, config.serviceTier ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(config, "allowAllPermissions")) {
+      await adapter.setAllowAllPermissions(engineSessionId, config.allowAllPermissions ?? null);
     }
   }
 

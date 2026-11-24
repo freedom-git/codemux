@@ -320,6 +320,16 @@ export abstract class EngineAdapter extends EventEmitter {
     return null;
   }
 
+  // --- Allow All Permissions ---
+
+  /** Toggle "Allow all" tool permissions for a session (no-op by default) */
+  async setAllowAllPermissions(_sessionId: string, _enabled: boolean | null): Promise<void> {}
+
+  /** Get whether "Allow all" tool permissions are currently active for a session */
+  getAllowAllPermissions(_sessionId: string): boolean | null {
+    return null;
+  }
+
   // --- Permissions ---
 
   /** Reply to a permission request */
