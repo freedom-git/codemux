@@ -469,6 +469,24 @@ select:focus-visible {
   outline: none;
 }
 
+/* Prevent iOS WebKit from auto-zooming (~1.14x) when focusing inputs < 16px,
+   which leaves the page zoomed in after dismissing the soft keyboard. */
+@supports (-webkit-touch-callout: none) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([class*="text-lg"]):not([class*="text-xl"]):not([class*="text-2xl"]):not([class*="text-3xl"]),
+  textarea:not([class*="text-lg"]):not([class*="text-xl"]):not([class*="text-2xl"]):not([class*="text-3xl"]),
+  select:not([class*="text-lg"]):not([class*="text-xl"]):not([class*="text-2xl"]):not([class*="text-3xl"]) {
+    font-size: 16px;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 639px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([class*="text-lg"]):not([class*="text-xl"]):not([class*="text-2xl"]):not([class*="text-3xl"]),
+  textarea:not([class*="text-lg"]):not([class*="text-xl"]):not([class*="text-2xl"]):not([class*="text-3xl"]),
+  select:not([class*="text-lg"]):not([class*="text-xl"]):not([class*="text-2xl"]):not([class*="text-3xl"]) {
+    font-size: 16px;
+  }
+}
+
 code, kbd, samp, pre {
   font-family: var(--font-mono);
   font-feature-settings: "liga" 0, "calt" 1;

@@ -649,7 +649,7 @@ export function PromptInput(props: PromptInputProps) {
               : modePlaceholder()
           }
           rows={1}
-          class={`w-full px-3.5 sm:px-4 pt-3.5 pb-2 bg-transparent resize-none focus:outline-none text-gray-900 dark:text-gray-50 max-h-[120px] sm:max-h-[200px] overflow-y-auto text-[14px] leading-relaxed placeholder:text-gray-400 dark:placeholder:text-gray-500 ${props.disabled ? "cursor-not-allowed opacity-50" : ""}`}
+          class={`w-full px-3.5 sm:px-4 pt-3.5 pb-2 bg-transparent resize-none focus:outline-none text-gray-900 dark:text-gray-50 max-h-[120px] sm:max-h-[200px] overflow-y-auto text-[16px] sm:text-[14px] leading-relaxed placeholder:text-gray-400 dark:placeholder:text-gray-500 ${props.disabled ? "cursor-not-allowed opacity-50" : ""}`}
           style={{ "min-height": "52px" }}
         />
         {/* Hidden file input for image selection */}
