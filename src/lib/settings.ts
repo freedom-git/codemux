@@ -182,6 +182,37 @@ let _bootstrapDone = false;
 let _bootstrapPromise: Promise<boolean> | null = null;
 
 /**
+ * Apply shared settings pushed from the host without writing back to the host.
+ * Keeps both Electron's in-memory renderer cache and web localStorage synchronized.
+ */
+export function applySharedSettingsSnapshot(settings: Record<string, unknown>): void {
+  if (isElectron()) {
+    const cache = getRendererCache();
+    if (cache) {
+      for (const [key, value] of Object.entries(settings)) {
+        if (
+          value && typeof value === "object" && !Array.isArray(value) &&
+          cache[key] && typeof cache[key] === "object" && !Array.isArray(cache[key])
+        ) {
+          cache[key] = { ...(cache[key] as Record<string, unknown>), ...(value as Record<string, unknown>) };
+        } else {
+          cache[key] = value;
+        }
+      }
+    }
+  }
+  for (const [key, value] of Object.entries(settings)) {
+    if (value !== undefined) {
+      try {
+        localStorage.setItem(`settings:${key}`, JSON.stringify(value));
+      } catch {
+        // localStorage full or unavailable
+      }
+    }
+  }
+}
+
+/**
  * Fetch host settings and write them to localStorage.
  * No-op in Electron (settings already come from preload cache).
  * No-op if already bootstrapped in this page session.
@@ -190,6 +221,23 @@ let _bootstrapPromise: Promise<boolean> | null = null;
 export async function bootstrapHostSettings(): Promise<boolean> {
   if (isElectron()) return false;
   if (_bootstrapDone) return false;
+  if (!Auth.isAuthenticated()) return false;
+  if (_bootstrapPromise) return _bootstrapPromise;
+
+  _bootstrapPromise = fetchHostSettings();
+  try {
+    return await _bootstrapPromise;
+  } finally {
+    _bootstrapPromise = null;
+  }
+}
+
+/**
+ * Re-fetch shared host settings (e.g. after WebSocket reconnect from sleep).
+ * No-op in Electron or when unauthenticated.
+ */
+export async function refreshHostSettings(): Promise<boolean> {
+  if (isElectron()) return false;
   if (!Auth.isAuthenticated()) return false;
   if (_bootstrapPromise) return _bootstrapPromise;
 
@@ -222,6 +270,13 @@ async function fetchHostSettings(): Promise<boolean> {
         } catch {
           // localStorage full or unavailable
         }
+      }
+    }
+    if (!Object.prototype.hasOwnProperty.call(settings, "pinnedSessions")) {
+      try {
+        localStorage.removeItem("settings:pinnedSessions");
+      } catch {
+        // localStorage unavailable
       }
     }
 

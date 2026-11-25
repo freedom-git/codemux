@@ -30,7 +30,16 @@ vi.stubGlobal('localStorage', createLocalStorageMock());
 vi.stubGlobal('window', globalThis);
 
 // Import AFTER globals are stubbed
-const { getSetting, saveSetting, getNestedSetting, saveNestedSetting, bootstrapHostSettings, _resetBootstrapState } = await import('../../../../src/lib/settings');
+const {
+  getSetting,
+  saveSetting,
+  getNestedSetting,
+  saveNestedSetting,
+  bootstrapHostSettings,
+  refreshHostSettings,
+  applySharedSettingsSnapshot,
+  _resetBootstrapState,
+} = await import('../../../../src/lib/settings');
 const { Auth } = await import('../../../../src/lib/auth');
 
 describe('settings', () => {
@@ -371,6 +380,37 @@ describe('settings', () => {
 
       // Should not throw
       expect(() => saveSetting('theme', 'dark')).not.toThrow();
+    });
+
+    it('synchronizes pinnedSessions via PATCH, refreshHostSettings, and applySharedSettingsSnapshot', async () => {
+      vi.mocked(Auth.isAuthenticated).mockReturnValue(true);
+      await saveSetting('pinnedSessions', ['conv_a', 'conv_b']);
+      expect(fetch).toHaveBeenCalledWith('/api/settings/shared', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-token',
+        },
+        body: JSON.stringify({ pinnedSessions: ['conv_a', 'conv_b'] }),
+      });
+
+      applySharedSettingsSnapshot({ pinnedSessions: ['conv_c'] });
+      expect(getSetting('pinnedSessions')).toEqual(['conv_c']);
+
+      // refreshHostSettings re-fetches even after bootstrap completed and clears stale local pins if host omitted them
+      vi.mocked(fetch as any).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ settings: { theme: 'dark', pinnedSessions: ['conv_host'] } }),
+      });
+      expect(await bootstrapHostSettings()).toBe(true);
+      expect(getSetting('pinnedSessions')).toEqual(['conv_host']);
+
+      vi.mocked(fetch as any).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ settings: { theme: 'dark' } }),
+      });
+      expect(await refreshHostSettings()).toBe(true);
+      expect(getSetting('pinnedSessions')).toBeUndefined();
     });
   });
 });

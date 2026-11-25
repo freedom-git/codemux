@@ -3,6 +3,7 @@ import { runtimeHost } from "#runtime-host";
 import type { LevelOption } from "electron-log";
 import { getLogsPath, getSettingsPath } from "./app-paths";
 import { createSettingsStore } from "../../../shared/settings-store";
+import { emitSettingsSaved } from "../../../shared/settings-events";
 import { resolveRuntimeLogPath } from "../../../shared/runtime-paths";
 
 // Configure electron-log for the main process.
@@ -31,7 +32,15 @@ function loadSettings(): Record<string, unknown> {
 }
 
 function saveSettings(patch: Record<string, unknown>): void | Promise<void> {
-  return (runtimeHost.settings ?? localSettings).saveSettings(patch);
+  const result = (runtimeHost.settings ?? localSettings).saveSettings(patch);
+  if (result && typeof (result as Promise<void>).then === "function") {
+    void (result as Promise<void>).then(() => {
+      emitSettingsSaved(patch);
+    }).catch(() => {});
+    return result;
+  }
+  emitSettingsSaved(patch);
+  return result;
 }
 
 // Restore persisted log level, fallback to "warn"

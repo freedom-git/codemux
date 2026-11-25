@@ -117,6 +117,7 @@ export interface GatewayNotificationHandlers {
   onScheduledTaskFailed?: (taskId: string, error: string) => void;
   onScheduledTasksChanged?: (tasks: ScheduledTask[]) => void;
   onOrchestrationUpdated?: (run: OrchestrationRun) => void;
+  onSharedSettingsUpdated?: (settings: Record<string, unknown>) => void;
   onConnected?: () => void;
   onDisconnected?: (reason: string) => void;
 }
@@ -440,6 +441,12 @@ class GatewayAPI {
 
     this.bind("orchestration.updated", (data) => {
       this.handlers.onOrchestrationUpdated?.(data.run);
+    });
+
+    this.bind("settings.shared.updated", (data) => {
+      if (data?.settings && typeof data.settings === "object") {
+        this.handlers.onSharedSettingsUpdated?.(data.settings);
+      }
     });
   }
 

@@ -15,6 +15,7 @@ export const SHARED_SETTINGS_KEYS = [
   "projectPathFilter",
   "scheduledTasksEnabled",
   "worktreeEnabled",
+  "pinnedSessions",
   "engineReasoningEfforts",
   "engineServiceTiers",
   "customAccessUrl",
@@ -66,6 +67,12 @@ export function isValidSharedSettingValue(key: SharedSettingsKey, value: unknown
     case "scheduledTasksEnabled":
     case "worktreeEnabled":
       return typeof value === "boolean";
+    case "pinnedSessions":
+      return (
+        Array.isArray(value) &&
+        value.length <= 500 &&
+        value.every((item) => typeof item === "string" && item.length > 0 && item.length <= 256)
+      );
     case "engineModels": {
       if (!isPlainObject(value)) return false;
       const entries = Object.entries(value);

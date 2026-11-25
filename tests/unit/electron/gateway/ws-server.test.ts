@@ -123,6 +123,7 @@ vi.mock("../../../../electron/main/services/scheduled-task-service", () => ({
 // ---------------------------------------------------------------------------
 
 import { GatewayServer } from "../../../../electron/main/gateway/ws-server";
+import { emitSettingsSaved } from "../../../../shared/settings-events";
 import {
   GatewayRequestType,
   GatewayNotificationType,
@@ -1819,6 +1820,25 @@ describe("GatewayServer", () => {
       expect(response.error).toEqual({
         code: "UNKNOWN_REQUEST",
         message: "Unknown request type: some.unknown.type",
+      });
+    });
+
+    it("broadcasts settings.shared.updated for shared keys like pinnedSessions and ignores internal keys", () => {
+      const { connect } = createTestHarness();
+      const ws = connect();
+
+      emitSettingsSaved({ logLevel: "debug", lastSessionId: "conv_secret" });
+      expect(ws.send).not.toHaveBeenCalled();
+
+      emitSettingsSaved({ pinnedSessions: ["conv_1", "conv_2"], lastSessionId: "conv_secret" });
+      expect(ws.send).toHaveBeenCalledOnce();
+      expect(JSON.parse(ws.send.mock.calls[0][0])).toEqual({
+        type: GatewayNotificationType.SETTINGS_SHARED_UPDATED,
+        payload: {
+          settings: {
+            pinnedSessions: ["conv_1", "conv_2"],
+          },
+        },
       });
     });
   });

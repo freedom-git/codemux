@@ -86,7 +86,13 @@ import { notify } from "../lib/notifications";
 import { isDefaultTitle } from "../lib/session-utils";
 import { formatTokenCount, formatCostWithUnit, getEngineBadge } from "../components/share/common";
 import { EmptyHero } from "../components/EmptyHero";
-import { getSetting, saveSetting, bootstrapHostSettings } from "../lib/settings";
+import {
+  getSetting,
+  saveSetting,
+  bootstrapHostSettings,
+  refreshHostSettings,
+  applySharedSettingsSnapshot,
+} from "../lib/settings";
 import { CONNECTION_CENTER_PATH } from "../lib/routes";
 import { readProjectPathFilter } from "../../shared/project-path-filter";
 import { BrandMark } from "../components/BrandMark";
@@ -214,11 +220,23 @@ export default function Chat() {
   // Track sessions whose error/cancelled status has been dismissed by viewing
   const [dismissedSessions, setDismissedSessions] = createSignal<Set<string>>(new Set());
   // Active sessions: pin state + delayed removal for Active section
-  const savedPinsSetting = getSetting<unknown>("pinnedSessions");
-  const savedPins = Array.isArray(savedPinsSetting)
-    ? savedPinsSetting.filter((pin): pin is string => typeof pin === "string")
-    : [];
-  const [pinnedSessions, setPinnedSessions] = createSignal<Set<string>>(new Set(savedPins));
+  const readPinnedSessionsFromSettings = (): Set<string> => {
+    const raw = getSetting<unknown>("pinnedSessions");
+    const ids = Array.isArray(raw)
+      ? raw.filter((pin): pin is string => typeof pin === "string" && pin.length > 0)
+      : [];
+    return new Set(ids);
+  };
+  const [pinnedSessions, setPinnedSessions] = createSignal<Set<string>>(readPinnedSessionsFromSettings());
+  const syncPinnedSessionsFromSettings = () => {
+    const next = readPinnedSessionsFromSettings();
+    setPinnedSessions((prev) => {
+      if (prev.size === next.size && [...prev].every((id) => next.has(id))) {
+        return prev;
+      }
+      return next;
+    });
+  };
   const [delayingRemoval, setDelayingRemoval] = createSignal<Set<string>>(new Set());
   const delayTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let prevSendingMap: Record<string, boolean> = {};
@@ -1332,7 +1350,14 @@ export default function Chat() {
     const current = () => !disposed && generation === recoveryGeneration && gatewayConnected();
     recoveryPromise = (async () => {
       if (!current()) return;
-      const tasks: Promise<unknown>[] = [refreshWebSessionList(current)];
+      const tasks: Promise<unknown>[] = [
+        refreshWebSessionList(current),
+        refreshHostSettings().then((refreshed) => {
+          if (refreshed && current()) {
+            syncPinnedSessionsFromSettings();
+          }
+        }),
+      ];
       if (sessionId) {
         tasks.push(loadSessionMessages(sessionId, { preserveScroll: true, refreshActivity: true }));
         tasks.push(resyncPending(sessionId));
@@ -1406,6 +1431,7 @@ export default function Chat() {
         refreshThemeFromSettings();
         refreshLocaleFromSettings();
       }
+      syncPinnedSessionsFromSettings();
 
       // Build notification handlers for this mount's closures
       const handlers = {
@@ -1564,6 +1590,12 @@ export default function Chat() {
             }
           }
         },
+        onSharedSettingsUpdated: (settings: Record<string, unknown>) => {
+          applySharedSettingsSnapshot(settings);
+          if (Object.prototype.hasOwnProperty.call(settings, "pinnedSessions")) {
+            syncPinnedSessionsFromSettings();
+          }
+        },
       };
 
       const needsSessionBootstrap =
@@ -1682,7 +1714,10 @@ export default function Chat() {
           }
 
           // Prune pinned session IDs that no longer exist
-          const validIds = new Set(sessionInfos.map(s => s.id));
+          const validIds = new Set([
+            ...sessionInfos.map(s => s.id),
+            ...sessionStore.list.map(s => s.id),
+          ]);
           setPinnedSessions((prev) => {
             const pruned = new Set([...prev].filter(id => validIds.has(id)));
             if (pruned.size !== prev.size) {

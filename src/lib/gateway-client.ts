@@ -103,6 +103,9 @@ export interface GatewayClientEvents {
   /** Orchestration push notifications */
   "orchestration.updated": (data: { run: OrchestrationRun }) => void;
 
+  /** Shared host settings updated across clients */
+  "settings.shared.updated": (data: { settings: Record<string, unknown> }) => void;
+
   /** Integrated terminal (PTY) push streams — owner-scoped on the server */
   "terminal.data": (data: { terminalId: string; data: string }) => void;
   "terminal.exit": (data: { terminalId: string; exitCode?: number; signal?: number }) => void;

@@ -641,5 +641,40 @@ describe('auth-route-handlers', () => {
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
       expect(mockSettingsFns.saveSettings).toHaveBeenCalledWith({ theme: 'light' });
     });
+
+    it('shares and validates pinnedSessions across GET and PATCH /api/settings/shared', async () => {
+      const pathname = '/api/settings/shared';
+      mockStore.verifyToken.mockReturnValue({ valid: true, deviceId: 'remote-device' });
+      mockSettingsFns.loadSettings.mockReturnValue({
+        pinnedSessions: ['conv_1', 'conv_2'],
+        lastSessionId: 'conv_1',
+      });
+
+      const getReq = createMockReq(pathname);
+      getReq.headers.authorization = 'Bearer valid-token';
+      expect(await handleSettingsRoutes(getReq, mockRes, pathname, mockStore, mockSettingsFns)).toBe(true);
+      const getBody = JSON.parse((mockRes.end as any).mock.calls[0][0]);
+      expect(getBody.settings.pinnedSessions).toEqual(['conv_1', 'conv_2']);
+
+      for (const validPins of [['conv_1', 'conv_3'], []]) {
+        (mockRes.writeHead as any).mockClear();
+        mockSettingsFns.saveSettings.mockClear();
+        const patchReq = createMockReq(pathname, 'PATCH', { pinnedSessions: validPins });
+        patchReq.headers.authorization = 'Bearer valid-token';
+        expect(await handleSettingsRoutes(patchReq, mockRes, pathname, mockStore, mockSettingsFns)).toBe(true);
+        expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+        expect(mockSettingsFns.saveSettings).toHaveBeenCalledWith({ pinnedSessions: validPins });
+      }
+
+      for (const invalidPins of ['conv_1', [123], [''], { a: 1 }]) {
+        (mockRes.writeHead as any).mockClear();
+        mockSettingsFns.saveSettings.mockClear();
+        const badReq = createMockReq(pathname, 'PATCH', { pinnedSessions: invalidPins });
+        badReq.headers.authorization = 'Bearer valid-token';
+        expect(await handleSettingsRoutes(badReq, mockRes, pathname, mockStore, mockSettingsFns)).toBe(true);
+        expect(mockRes.writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+        expect(mockSettingsFns.saveSettings).not.toHaveBeenCalled();
+      }
+    });
   });
 });

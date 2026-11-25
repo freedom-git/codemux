@@ -16,6 +16,8 @@ import {
 } from "../services/file-service";
 import { gatewayLog } from "../services/logger";
 import log from "../services/logger";
+import { onSettingsSaved } from "../../../shared/settings-events";
+import { isSharedSettingsKey } from "../../../shared/settings-keys";
 import { conversationStore } from "../services/conversation-store";
 import { canonicalCodexEngineType, canonicalCodexProjectId, canonicalCodexThreadId } from "../engines/codex/conversation-migration";
 import { scheduledTaskService } from "../services/scheduled-task-service";
@@ -92,6 +94,7 @@ export class GatewayServer {
   private requestValidator?: GatewayServerOptions["requestValidator"];
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private closePromise: Promise<void> | null = null;
+  private unsubscribeSettings: (() => void) | null = null;
 
   constructor(
     engineManager: EngineManager,
@@ -108,6 +111,21 @@ export class GatewayServer {
         type: GatewayNotificationType.FILE_CHANGED,
         payload: event,
       });
+    });
+
+    this.unsubscribeSettings = onSettingsSaved((patch) => {
+      const sharedPatch: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(patch)) {
+        if (isSharedSettingsKey(key)) {
+          sharedPatch[key] = value;
+        }
+      }
+      if (Object.keys(sharedPatch).length > 0) {
+        this.broadcast({
+          type: GatewayNotificationType.SETTINGS_SHARED_UPDATED,
+          payload: { settings: sharedPatch },
+        });
+      }
     });
   }
 
@@ -164,6 +182,8 @@ export class GatewayServer {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     unwatchAll();
+    this.unsubscribeSettings?.();
+    this.unsubscribeSettings = null;
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;

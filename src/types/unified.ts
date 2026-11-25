@@ -1075,6 +1075,9 @@ export const GatewayNotificationType = {
   // Orchestration
   ORCHESTRATION_UPDATED: "orchestration.updated",
 
+  // Shared Settings
+  SETTINGS_SHARED_UPDATED: "settings.shared.updated",
+
   // Integrated Terminal
   TERMINAL_DATA: "terminal.data",
   TERMINAL_EXIT: "terminal.exit",
