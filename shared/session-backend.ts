@@ -1,6 +1,6 @@
 import type {
   CodexServiceTier, EngineCatalogSnapshot, ReasoningEffort, UnifiedMessage,
-  UnifiedPart, UnifiedPermission, UnifiedQuestion, UnifiedSession,
+  UnifiedPart, UnifiedPermission, UnifiedQuestion, UnifiedSession, UnifiedSessionWorkspaceState,
 } from "../src/types/unified";
 
 export interface SendMessageOptions {
@@ -21,8 +21,10 @@ export interface SessionBackendEvents {
   "message.updated": (data: { sessionId: string; message: UnifiedMessage }) => void;
   "message.removed": (data: { sessionId: string; messageId: string }) => void;
   "session.updated": (data: { session: Partial<UnifiedSession> & Pick<UnifiedSession, "id" | "engineType"> }) => void;
+  "session.rebound": (data: { previousSessionId: string; session: UnifiedSession }) => void;
   "session.created": (data: { session: UnifiedSession }) => void;
   "session.removed": (data: { sessionId: string }) => void;
+  "session.workspace.updated": (data: UnifiedSessionWorkspaceState) => void;
   "permission.asked": (data: { permission: UnifiedPermission }) => void;
   "permission.replied": (data: { permissionId: string; optionId: string }) => void;
   "question.asked": (data: { question: UnifiedQuestion }) => void;

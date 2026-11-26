@@ -58,6 +58,9 @@ import {
   type TerminalListRequest,
   type TerminalProfilesListRequest,
   type FileExistsRequest,
+  type SessionWorkspaceGetRequest,
+  type SessionWorkspacePreviewFileRequest,
+  type SessionBackgroundStopRequest,
 } from "../../../src/types/unified";
 import { isCodexServiceTier, isReasoningEffort } from "../../../src/types/unified";
 
@@ -893,6 +896,30 @@ export class GatewayServer {
         return await fileService.fileExists(req.path, req.cwd);
       }
 
+      case GatewayRequestType.SESSION_WORKSPACE_GET: {
+        const req = p as SessionWorkspaceGetRequest;
+        if (!nonEmptyString(req?.sessionId)) {
+          throw Object.assign(new Error("sessionId is required"), { code: "INVALID_PARAMS" });
+        }
+        return this.engineManager.getSessionWorkspace(req.sessionId);
+      }
+
+      case GatewayRequestType.SESSION_WORKSPACE_PREVIEW_FILE: {
+        const req = p as SessionWorkspacePreviewFileRequest;
+        if (!nonEmptyString(req?.sessionId) || !nonEmptyString(req?.fileId)) {
+          throw Object.assign(new Error("sessionId and fileId are required"), { code: "INVALID_PARAMS" });
+        }
+        return this.engineManager.previewSessionFile(req.sessionId, req.fileId);
+      }
+
+      case GatewayRequestType.SESSION_BACKGROUND_STOP: {
+        const req = p as SessionBackgroundStopRequest;
+        if (!nonEmptyString(req?.sessionId) || !nonEmptyString(req?.taskId)) {
+          throw Object.assign(new Error("sessionId and taskId are required"), { code: "INVALID_PARAMS" });
+        }
+        return this.engineManager.stopSessionBackgroundTask(req.sessionId, req.taskId);
+      }
+
       default:
         throw Object.assign(
           new Error(`Unknown request type: ${type}`),
@@ -942,6 +969,13 @@ export class GatewayServer {
     em.on("session.created", (data) => {
       this.broadcast({
         type: GatewayNotificationType.SESSION_CREATED,
+        payload: data,
+      });
+    });
+
+    em.on("session.workspace.updated", (data) => {
+      this.broadcast({
+        type: GatewayNotificationType.SESSION_WORKSPACE_UPDATED,
         payload: data,
       });
     });

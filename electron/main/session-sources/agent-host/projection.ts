@@ -4,6 +4,13 @@ import type {
 } from "@microsoft/agent-host-protocol";
 import type { EngineType, UnifiedMessage, UnifiedPart, UnifiedPermission, UnifiedQuestion, SessionActivityStatus } from "../../../../src/types/unified";
 import { inferToolKind, normalizeToolName } from "../../../../src/types/tool-mapping";
+import {
+  applySqlTodosMutation,
+  extractStructuredTodos,
+  isSqlTodosMutation,
+  serializeTodoEntries,
+  type StoredTodoEntry,
+} from "../../../../shared/sql-todos";
 import { SESSION_FLAGS, type Wire } from "./wire";
 
 export const isAgentHostSession = (id: string) => id.startsWith("ahp:");
@@ -25,7 +32,13 @@ function input(tool: ToolCallState): unknown {
   try { return JSON.parse(raw); } catch { return { command: raw }; }
 }
 
-export type TurnProjectionCache = Map<string, { turn: object; directory: string; messages: UnifiedMessage[] }>;
+export type TurnProjectionCache = Map<string, {
+  turn: object;
+  directory: string;
+  todosBeforeSig: string;
+  sqlMutations: string[];
+  messages: UnifiedMessage[];
+}>;
 
 export function projectChat(id: string, chat: ChatState, directory: string, engineType: EngineType, cache?: TurnProjectionCache): UnifiedMessage[] {
   const turns = [...chat.turns, ...(chat.activeTurn ? [chat.activeTurn] : [])];
@@ -33,9 +46,15 @@ export function projectChat(id: string, chat: ChatState, directory: string, engi
     const present = new Set(turns.map(turn => turn.id));
     for (const key of cache.keys()) if (!present.has(key)) cache.delete(key);
   }
+  const sqlTodos = new Map<string, StoredTodoEntry>();
   return turns.flatMap(turn => {
+    const todosBeforeSig = sqlTodos.size > 0 ? JSON.stringify([...sqlTodos.entries()]) : "";
     const previous = cache?.get(turn.id);
-    if (previous?.turn === turn && previous.directory === directory) return previous.messages;
+    if (previous?.turn === turn && previous.directory === directory && previous.todosBeforeSig === todosBeforeSig) {
+      for (const query of previous.sqlMutations) applySqlTodosMutation(sqlTodos, query);
+      return previous.messages;
+    }
+    const sqlMutations: string[] = [];
     const created = Date.parse(turn.startedAt ?? chat.modifiedAt) || 0;
     const completed = "state" in turn;
     const end = created + ("duration" in turn ? turn.duration ?? 0 : 0);
@@ -62,14 +81,37 @@ export function projectChat(id: string, chat: ChatState, directory: string, engi
       else if (part.kind === "error") error = part.error.message;
       else if (part.kind === "toolCall") {
         const tool = part.toolCall;
-        const toolInput = input(tool);
+        const rawToolInput = input(tool);
         const timing = { start: created, end, duration: Math.max(0, end - created) };
         const output = "content" in tool ? (tool.content ?? []).map(content =>
           content.type === "text" ? content.text : content.type === "terminal" ? content.result?.preview ?? content.title
             : content.type === "resource" ? content.uri : "").filter(Boolean).join("\n") : "";
+        let normalizedTool = normalizeToolName(engineType, tool.toolName);
+        let toolInput = rawToolInput;
+        let title = tool.displayName || tool.toolName;
+        const sqlQuery = rawToolInput && typeof rawToolInput === "object"
+          ? (rawToolInput as Record<string, unknown>).query
+          : undefined;
+        if (normalizedTool === "sql" && typeof sqlQuery === "string" && isSqlTodosMutation(sqlQuery)) {
+          sqlMutations.push(sqlQuery);
+          applySqlTodosMutation(sqlTodos, sqlQuery);
+          normalizedTool = "todo";
+          title = "Todo";
+          toolInput = { todos: serializeTodoEntries(sqlTodos) };
+        } else if (normalizedTool === "todo" || tool.toolName === "manage_todo_list" || tool.toolName === "TodoWrite") {
+          const structured = extractStructuredTodos(rawToolInput);
+          if (structured) {
+            normalizedTool = "todo";
+            title = "Todo";
+            toolInput = {
+              ...(rawToolInput && typeof rawToolInput === "object" ? rawToolInput as Record<string, unknown> : {}),
+              todos: structured,
+            };
+          }
+        }
         parts.push({ ...base, type: "tool", callId: tool.toolCallId, originalTool: tool.toolName,
-          normalizedTool: normalizeToolName(engineType, tool.toolName), kind: inferToolKind(undefined, normalizeToolName(engineType, tool.toolName)),
-          title: tool.displayName || tool.toolName,
+          normalizedTool, kind: inferToolKind(undefined, normalizedTool),
+          title,
           state: tool.status === "completed" ? (tool.success
             ? { status: "completed", input: toolInput, output, time: timing }
             : { status: "error", input: toolInput, output, error: tool.error?.message ?? text(tool.pastTenseMessage), time: timing })
@@ -86,7 +128,7 @@ export function projectChat(id: string, chat: ChatState, directory: string, engi
         ...(turn.usage ? { tokens: { input: turn.usage.inputTokens ?? 0, output: turn.usage.outputTokens ?? 0,
           cache: { read: turn.usage.cacheReadTokens ?? 0, write: 0 } } } : {}) },
     ] satisfies UnifiedMessage[];
-    cache?.set(turn.id, { turn, directory, messages });
+    cache?.set(turn.id, { turn, directory, todosBeforeSig, sqlMutations, messages });
     return messages;
   });
 }

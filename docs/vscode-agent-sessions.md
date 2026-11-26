@@ -87,15 +87,27 @@ Authentication and harness availability remain the editor's responsibility.
 
 Messages, streamed responses, tool approvals, questions, cancellation, and queued
 prompts use the original Host. Replies completed by another client withdraw stale
-prompts. Conflicting live owners are refused rather than selected arbitrarily.
+prompts. Conflicting live owners are refused rather than selected arbitrarily;
+when multiple standalone hosts share the same source, idle redundant instances
+are disconnected and suppressed in favor of the active owner so their
+`--idle-timeout` timers can expire naturally.
 If a write is interrupted before confirmation, its outcome may be unknown:
 refresh the conversation before retrying instead of sending it twice.
+
+Above the prompt input, CodeMux also surfaces a compact single-row workspace bar
+for active tasks and session files:
+- **Todo progress** (`Tasks X/Y`, projected from structured todo tools and SQLite `todos` queries),
+- **Background work & subagents** (live status popover plus `vscode/stopBackgroundWork` termination), and
+- **Session changeset & artifacts** (`changeset/session` and `agentHost/sessionArtifacts`, with inline Diff, Markdown, Code, and Image previews via `resourceRead`).
 
 ## Offline, removal, and scope
 
 Stopping the owning Host or disabling the switch disconnects the bridge. Already loaded
 history remains readable, but input is unavailable until the original executor
-returns. Reconnection preserves identity and reloads authoritative snapshots.
+returns. Reconnection preserves identity and reloads authoritative snapshots;
+0-message provisional drafts reaped by Agent Host's 30-second unused-draft GC
+while CodeMux is offline are automatically resurrected in place with their
+original title, directory, and permission settings.
 Read-only chats remain readable without acquiring an execution owner.
 
 **Remove from CodeMux** hides the local entry; it does not delete or archive the

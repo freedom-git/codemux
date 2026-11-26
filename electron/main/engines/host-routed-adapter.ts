@@ -15,7 +15,8 @@ export class HostRoutedAdapter extends EngineAdapter {
     this.engineType = sdk.engineType;
     this.external = new AgentHostProviderAdapter(sdk.engineType, source);
     const events = ["message.part.updated", "message.updated", "message.removed",
-      "session.updated", "session.created", "session.removed", "permission.asked", "permission.replied",
+      "session.updated", "session.rebound", "session.created", "session.removed", "session.workspace.updated",
+      "permission.asked", "permission.replied",
       "question.asked", "question.replied", "message.queued", "message.queued.consumed", "commands.changed"] as const;
     for (const driver of [this.sdk, this.external]) for (const event of events) this.relay(driver, event);
     this.sdk.on("status.changed", data => {
@@ -130,4 +131,7 @@ export class HostRoutedAdapter extends EngineAdapter {
   listProjects() { return this.sdk.listProjects(); }
   listCommands(id?: string, directory?: string) { return (id ? this.driver(id) : this.sdk).listCommands(id, directory); }
   invokeCommand(id: string, command: string, args: string, options?: Parameters<EngineAdapter["invokeCommand"]>[3]) { return this.driver(id).invokeCommand(id, command, args, options); }
+  getSessionWorkspace(id: string) { return this.driver(id).getSessionWorkspace(id); }
+  previewSessionFile(id: string, fileId: string) { return this.driver(id).previewSessionFile(id, fileId); }
+  stopBackgroundTask(id: string, taskId: string) { return this.driver(id).stopBackgroundTask(id, taskId); }
 }

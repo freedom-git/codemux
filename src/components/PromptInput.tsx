@@ -184,6 +184,8 @@ interface PromptInputProps {
   /** Controlled image draft for the current session */
   images?: ImageAttachment[];
   onImagesChange?: (images: ImageAttachment[]) => void;
+  /** Content rendered on the right side of the top mode-selector bar */
+  headerContent?: JSX.Element;
   /** Toolbar content rendered in the bottom bar (left of send button) */
   toolbarContent?: JSX.Element;
   /** Each new value moves keyboard focus into the textarea once it is enabled. */
@@ -539,10 +541,10 @@ export function PromptInput(props: PromptInputProps) {
 
   return (
     <div class="w-full max-w-4xl mx-auto">
-      {/* Agent selector and Model selector row */}
-      <div class="flex items-center justify-between gap-1.5 sm:gap-2 mb-2 flex-wrap">
+      {/* Agent selector and workspace pills row */}
+      <div class="relative flex items-center justify-between gap-1.5 mb-2 flex-nowrap">
         {/* Agent mode segmented control - left side */}
-        <div role="radiogroup" class="inline-flex items-center gap-0.5 p-0.5 rounded-[10px] bg-gray-900/[0.04] dark:bg-white/[0.04] ring-1 ring-inset ring-[var(--cm-hairline)]">
+        <div role="radiogroup" class="inline-flex items-center gap-0.5 p-0.5 shrink-0 rounded-[10px] bg-gray-900/[0.04] dark:bg-white/[0.04] ring-1 ring-inset ring-[var(--cm-hairline)]">
           <For each={modes()}>
             {(mode, index) => {
               const displayName = getModeDisplayName(mode);
@@ -555,7 +557,7 @@ export function PromptInput(props: PromptInputProps) {
                   role="radio"
                   aria-checked={isActive()}
                   onClick={() => handleAgentChange(mode)}
-                  class={`px-2 sm:px-2.5 py-1 text-xs font-medium rounded-lg transition-all flex items-center gap-1 sm:gap-1.5 min-h-[30px] ${
+                  class={`px-1.5 sm:px-2.5 py-1 text-xs font-medium rounded-lg transition-all flex items-center gap-1 sm:gap-1.5 min-h-[28px] sm:min-h-[30px] ${
                     isActive()
                       ? `${color} bg-[var(--cm-surface)] dark:bg-white/[0.09] shadow-[var(--cm-shadow-sm)] ring-1 ring-[var(--cm-hairline)]`
                       : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
@@ -569,6 +571,12 @@ export function PromptInput(props: PromptInputProps) {
             }}
           </For>
         </div>
+
+        <Show when={props.headerContent}>
+          <div class="ml-auto flex items-center shrink-0">
+            {props.headerContent}
+          </div>
+        </Show>
       </div>
 
       {/* Input area */}

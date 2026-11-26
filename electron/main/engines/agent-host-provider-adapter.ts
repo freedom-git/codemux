@@ -10,6 +10,8 @@ export class AgentHostProviderAdapter extends EngineAdapter {
     const permissions = new Set<string>(), questions = new Set<string>();
     source.on("catalog.updated", snapshot => { if (snapshot.engineType === engineType) this.emit("catalog.updated", snapshot); });
     source.on("session.updated", data => { if (data.session.engineType === engineType) this.emit("session.updated", data); });
+    source.on("session.rebound", data => { if (data.session.engineType === engineType) this.emit("session.rebound", data); });
+    source.on("session.workspace.updated", data => { if (source.sessionEngine(data.sessionId) === engineType) this.emit("session.workspace.updated", data); });
     source.on("message.updated", data => { if (source.sessionEngine(data.sessionId) === engineType) this.emit("message.updated", data); });
     source.on("message.removed", data => { if (source.sessionEngine(data.sessionId) === engineType) this.emit("message.removed", data); });
     source.on("message.queued", data => { if (source.sessionEngine(data.sessionId) === engineType) this.emit("message.queued", data); });
@@ -82,4 +84,7 @@ export class AgentHostProviderAdapter extends EngineAdapter {
     return this.source.rejectQuestion(id, pending.sessionId);
   }
   async listProjects() { return (await this.getCatalog()).projects; }
+  async getSessionWorkspace(id: string) { return this.check(id).getSessionWorkspace(id); }
+  async previewSessionFile(id: string, fileId: string) { return this.check(id).previewSessionFile(id, fileId); }
+  async stopBackgroundTask(id: string, taskId: string) { return this.check(id).stopBackgroundTask(id, taskId); }
 }

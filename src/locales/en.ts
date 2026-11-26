@@ -1116,6 +1116,34 @@ export interface LocaleDict {
     deleteImpactSessions: string;
     deleteIrreversible: string;
   };
+  sessionWorkspace: {
+    runningTasks: string;
+    tasksTitle: string;
+    subagentBadge: string;
+    detachedBadge: string;
+    completedBadge: string;
+    stopTask: string;
+    stoppingTask: string;
+    filesCount: string;
+    filesTitle: string;
+    filterFilesPlaceholder: string;
+    noMatchingFiles: string;
+    loadingFiles: string;
+    kindCreated: string;
+    kindModified: string;
+    kindDeleted: string;
+    kindRenamed: string;
+    kindArtifact: string;
+    viewDiff: string;
+    viewContent: string;
+    viewRendered: string;
+    openExternal: string;
+    prevFile: string;
+    nextFile: string;
+    binaryNotPreviewable: string;
+    contentTruncated: string;
+    previewLoadFailed: string;
+  };
 }
 
 export const en: LocaleDict = {
@@ -2226,5 +2254,33 @@ export const en: LocaleDict = {
     deleteImpactBranch: "Delete the associated git branch",
     deleteImpactSessions: "Remove {count} session(s) linked to this worktree",
     deleteIrreversible: "This action cannot be undone. Uncommitted changes will be lost.",
+  },
+  sessionWorkspace: {
+    runningTasks: "{count} running",
+    tasksTitle: "Background Tasks",
+    subagentBadge: "Subagent",
+    detachedBadge: "Detached",
+    completedBadge: "Done",
+    stopTask: "Stop",
+    stoppingTask: "Stopping…",
+    filesCount: "{count} file(s)",
+    filesTitle: "Session Files",
+    filterFilesPlaceholder: "Filter files…",
+    noMatchingFiles: "No matching files",
+    loadingFiles: "Loading file changes…",
+    kindCreated: "New",
+    kindModified: "Modified",
+    kindDeleted: "Deleted",
+    kindRenamed: "Renamed",
+    kindArtifact: "Artifact",
+    viewDiff: "Diff",
+    viewContent: "Code",
+    viewRendered: "Preview",
+    openExternal: "Open Link",
+    prevFile: "Previous file",
+    nextFile: "Next file",
+    binaryNotPreviewable: "Binary file cannot be previewed as text.",
+    contentTruncated: "Large file truncated to 512 KB for preview.",
+    previewLoadFailed: "Failed to load file preview.",
   },
 };

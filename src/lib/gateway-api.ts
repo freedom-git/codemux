@@ -52,6 +52,8 @@ import type {
   TerminalListResponse,
   TerminalProfilesListResponse,
   FileExistsResponse,
+  UnifiedSessionWorkspaceState,
+  UnifiedSessionFilePreview,
 } from "../types/unified";
 
 // --- Reactive connection signal ---
@@ -103,6 +105,7 @@ export interface GatewayNotificationHandlers {
   onSessionRemoved?: (sessionId: string) => void;
   onSessionUpdated?: (session: UnifiedSession) => void;
   onSessionCreated?: (session: UnifiedSession) => void;
+  onSessionWorkspaceUpdated?: (workspace: UnifiedSessionWorkspaceState) => void;
   onCatalogUpdated?: (snapshot: EngineCatalogSnapshot) => void;
   onPermissionAsked?: (permission: UnifiedPermission) => void;
   onPermissionReplied?: (permissionId: string, optionId: string) => void;
@@ -447,6 +450,11 @@ class GatewayAPI {
       if (data?.settings && typeof data.settings === "object") {
         this.handlers.onSharedSettingsUpdated?.(data.settings);
       }
+    });
+
+    this.bind("session.workspace.updated", (data) => {
+      if (this.removedSessionIds.has(data.sessionId)) return;
+      this.handlers.onSessionWorkspaceUpdated?.(data);
     });
   }
 
@@ -938,6 +946,18 @@ class GatewayAPI {
 
   listTerminals(sessionId?: string): Promise<TerminalListResponse> {
     return gatewayClient.listTerminals({ sessionId });
+  }
+
+  getSessionWorkspace(sessionId: string): Promise<UnifiedSessionWorkspaceState> {
+    return gatewayClient.getSessionWorkspace(sessionId);
+  }
+
+  previewSessionFile(sessionId: string, fileId: string): Promise<UnifiedSessionFilePreview> {
+    return gatewayClient.previewSessionFile(sessionId, fileId);
+  }
+
+  stopSessionBackgroundTask(sessionId: string, taskId: string): Promise<{ stopped: boolean }> {
+    return gatewayClient.stopSessionBackgroundTask(sessionId, taskId);
   }
 
   /**

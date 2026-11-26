@@ -4,10 +4,12 @@
 
 import { EventEmitter } from "events";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { EngineAdapter, type EngineAdapterEvents } from "../engines/engine-adapter";
 import type { SessionSource } from "../session-sources/session-source";
 import { conversationStore, makeCatalogProjectId } from "../services/conversation-store";
 import { getDefaultWorkspacePath } from "../services/default-workspace";
+import * as fileService from "../services/file-service";
 import { engineManagerLog, getDefaultEngineFromSettings } from "../services/logger";
 import { timeId } from "../utils/id-gen";
 import { isDefaultTitle, isPromptFallbackTitle } from "../../../src/lib/session-utils";
@@ -42,6 +44,9 @@ import type {
   EngineCatalogSnapshot,
   CatalogProjectInput,
   CatalogProjectPatch,
+  UnifiedSessionWorkspaceState,
+  UnifiedSessionFilePreview,
+  UnifiedSessionFileItem,
 } from "../../../src/types/unified";
 import { REASONING_EFFORT_VALUES } from "../../../src/types/unified";
 import { normalizeMessageToolDisplay, normalizeToolPartDisplay } from "../engines/tool-display";
@@ -682,6 +687,40 @@ export class EngineManager extends EventEmitter {
       if (!conv) return;
       void this.purgeRemovedConversation(conv, "archived", conv.catalogSourceId ?? this.catalogSources.get(adapter.engineType))
         .catch((error) => engineManagerLog.error("Failed to remove excluded mirror:", error));
+    });
+    adapter.on("session.workspace.updated", (data) => {
+      if (this.ignoreSessionEvent(adapter, data.sessionId)) return;
+      const convId = this.resolveConversationId(data.sessionId, adapter.engineType);
+      if (!convId) return;
+      this.emit("session.workspace.updated", { ...data, sessionId: convId });
+    });
+    adapter.on("session.rebound", ({ previousSessionId, session }) => {
+      const convId = this.resolveConversationId(previousSessionId, adapter.engineType)
+        ?? conversationStore.findByEngineSession(previousSessionId, adapter.engineType)?.id;
+      const conv = convId ? conversationStore.get(convId) : undefined;
+      if (!conv) return;
+      for (const other of conversationStore.list({ engineType: adapter.engineType })) {
+        if (other.id !== conv.id && other.engineSessionId === session.id && (other.messageCount ?? 0) === 0 && !other.firstPrompt) {
+          this.forgetConversationMappings(other.id);
+          void conversationStore.delete(other.id).catch(() => {});
+        }
+      }
+      this.forgetConversationMappings(conv.id);
+      conversationStore.setEngineSession(conv.id, session.id, session.engineMeta);
+      conversationStore.update(conv.id, {
+        catalogAvailable: true,
+        ...(session.directory ? { directory: session.directory } : {}),
+        ...(session.title ? { engineTitle: session.title } : {}),
+      });
+      if (conv.catalogSourceId) {
+        this.engineToConvMap.set(JSON.stringify([adapter.engineType, conv.catalogSourceId, session.id]), conv.id);
+      }
+      this.engineToConvMap.set(session.id, conv.id);
+      this.sessionEngineMap.set(conv.id, adapter.engineType);
+      this.authoritativeSessions.set(conv.id, session);
+      this.rememberLiveSessionFields(conv.id, session, true);
+      const updated = this.sessionFromConversation(conversationStore.get(conv.id)!);
+      this.emit("session.updated", { session: updated });
     });
     // --- message.part.updated: accumulate step parts + rewrite sessionId ---
     adapter.on("message.part.updated", (data) => {
@@ -2865,5 +2904,130 @@ export class EngineManager extends EventEmitter {
       if (typeof ccSessionId === "string" && conv.engineMeta?.ccSessionId === ccSessionId) return conv;
     }
     return null;
+  }
+
+  // --- Session Workspace (background tasks, changed files, preview) ---
+
+  async getSessionWorkspace(sessionId: string): Promise<UnifiedSessionWorkspaceState> {
+    sessionId = conversationStore.resolveConversationId(sessionId);
+    const conv = conversationStore.get(sessionId);
+    if (!conv) {
+      return { sessionId, backgroundTasks: [], files: [] };
+    }
+    if (conv.engineSessionId) {
+      const adapter = this.getAdapter(conv.engineType);
+      if (adapter && this.isSessionCompatible(conv, adapter)) {
+        const externalWorkspace = await adapter.getSessionWorkspace(conv.engineSessionId).catch(() => null);
+        if (externalWorkspace) {
+          return { ...externalWorkspace, sessionId };
+        }
+      }
+    }
+    const todos = await this.extractStoredSessionTodos(sessionId);
+    if (!conv.directory) {
+      return { sessionId, backgroundTasks: [], files: [], ...(todos.length > 0 ? { todos } : {}) };
+    }
+    const gitStatus = await fileService.getGitStatus(conv.directory).catch(() => []);
+    let additions = 0;
+    let deletions = 0;
+    const files: UnifiedSessionFileItem[] = gitStatus.map((entry) => {
+      const cleanPath = entry.path.replaceAll("\\", "/");
+      const kind: UnifiedSessionFileItem["kind"] =
+        entry.status === "added" || entry.status === "untracked"
+          ? "created"
+          : entry.status === "deleted"
+            ? "deleted"
+            : entry.status === "renamed"
+              ? "renamed"
+              : "modified";
+      additions += entry.added ?? 0;
+      deletions += entry.removed ?? 0;
+      return {
+        id: cleanPath,
+        path: cleanPath,
+        label: path.posix.basename(cleanPath) || cleanPath,
+        kind,
+        ...(entry.added !== undefined ? { additions: entry.added } : {}),
+        ...(entry.removed !== undefined ? { deletions: entry.removed } : {}),
+        previewable: true,
+      };
+    });
+    return {
+      sessionId,
+      backgroundTasks: [],
+      ...(files.length > 0 ? { changesSummary: { files: files.length, additions, deletions } } : {}),
+      files,
+      ...(todos.length > 0 ? { todos } : {}),
+    };
+  }
+
+  private async extractStoredSessionTodos(
+    sessionId: string,
+  ): Promise<Array<{ content: string; status: "pending" | "in_progress" | "completed" }>> {
+    const messages = await conversationStore.listMessages(sessionId).catch(() => []);
+    const stepsFile = await conversationStore.getAllSteps(sessionId).catch(() => null);
+    for (let mi = messages.length - 1; mi >= 0; mi--) {
+      const msg = messages[mi];
+      if (msg.role !== "assistant") continue;
+      const parts = this.stepPartsBuffer.get(msg.id) ?? stepsFile?.messages[msg.id] ?? [];
+      for (let pi = parts.length - 1; pi >= 0; pi--) {
+        const part = parts[pi];
+        if (part.type !== "tool" || part.normalizedTool !== "todo") continue;
+        const st = part.state?.status;
+        if (st !== "completed" && st !== "running") continue;
+        const todos = (part.state as any)?.input?.todos;
+        if (Array.isArray(todos) && todos.length > 0) {
+          return todos;
+        }
+      }
+    }
+    return [];
+  }
+
+  async previewSessionFile(sessionId: string, fileId: string): Promise<UnifiedSessionFilePreview> {
+    sessionId = conversationStore.resolveConversationId(sessionId);
+    const conv = conversationStore.get(sessionId);
+    if (!conv) throw new Error(`Session not found: ${sessionId}`);
+    if (conv.engineSessionId) {
+      const adapter = this.getAdapter(conv.engineType);
+      if (adapter && this.isSessionCompatible(conv, adapter)) {
+        const externalPreview = await adapter.previewSessionFile(conv.engineSessionId, fileId);
+        if (externalPreview) return externalPreview;
+      }
+    }
+    if (!conv.directory) throw new Error("Session has no working directory.");
+    const fullPath = path.resolve(conv.directory, fileId);
+    const [diff, fileContent] = await Promise.all([
+      fileService.getGitDiff(conv.directory, fileId).catch(() => ""),
+      fileService.readFile(fullPath, conv.directory),
+    ]);
+    const cleanPath = fileId.replaceAll("\\", "/");
+    const label = path.posix.basename(cleanPath) || cleanPath;
+    if (fileContent.binary) {
+      const isImage = Boolean(fileContent.mimeType && /^image\/(png|jpeg|gif|webp|svg\+xml)$/i.test(fileContent.mimeType));
+      return {
+        id: fileId,
+        path: cleanPath,
+        label,
+        kind: "modified",
+        ...(isImage && fileContent.content ? { imageBase64: fileContent.content, mimeType: fileContent.mimeType } : { binary: true, mimeType: fileContent.mimeType }),
+      };
+    }
+    return {
+      id: fileId,
+      path: cleanPath,
+      label,
+      kind: "modified",
+      ...(diff.trim() ? { diff } : {}),
+      content: fileContent.content,
+    };
+  }
+
+  async stopSessionBackgroundTask(sessionId: string, taskId: string): Promise<{ stopped: boolean }> {
+    sessionId = conversationStore.resolveConversationId(sessionId);
+    const conv = conversationStore.get(sessionId);
+    if (!conv?.engineSessionId) return { stopped: false };
+    const adapter = this.getAdapterForSession(sessionId);
+    return adapter.stopBackgroundTask(conv.engineSessionId, taskId);
   }
 }

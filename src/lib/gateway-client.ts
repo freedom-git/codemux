@@ -58,6 +58,8 @@ import {
   type TerminalCreateResponse,
   type TerminalListRequest,
   type TerminalListResponse,
+  type UnifiedSessionWorkspaceState,
+  type UnifiedSessionFilePreview,
 } from "../types/unified";
 
 // --- Event types emitted by GatewayClient ---
@@ -78,6 +80,7 @@ export interface GatewayClientEvents {
   "session.removed": (data: { sessionId: string }) => void;
   "session.updated": (data: { session: UnifiedSession }) => void;
   "session.created": (data: { session: UnifiedSession }) => void;
+  "session.workspace.updated": (data: UnifiedSessionWorkspaceState) => void;
   "catalog.updated": (data: EngineCatalogSnapshot) => void;
   "permission.asked": (data: { permission: UnifiedPermission }) => void;
   "permission.replied": (data: { permissionId: string; optionId: string }) => void;
@@ -914,6 +917,20 @@ export class GatewayClient {
 
   listTerminals(req: TerminalListRequest = {}): Promise<TerminalListResponse> {
     return this.request(GatewayRequestType.TERMINAL_LIST, req);
+  }
+
+  // --- Session Workspace API ---
+
+  getSessionWorkspace(sessionId: string): Promise<UnifiedSessionWorkspaceState> {
+    return this.request(GatewayRequestType.SESSION_WORKSPACE_GET, { sessionId });
+  }
+
+  previewSessionFile(sessionId: string, fileId: string): Promise<UnifiedSessionFilePreview> {
+    return this.request(GatewayRequestType.SESSION_WORKSPACE_PREVIEW_FILE, { sessionId, fileId });
+  }
+
+  stopSessionBackgroundTask(sessionId: string, taskId: string): Promise<{ stopped: boolean }> {
+    return this.request(GatewayRequestType.SESSION_BACKGROUND_STOP, { sessionId, taskId });
   }
 
   // --- Log forwarding (fire-and-forget, no response expected) ---

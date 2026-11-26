@@ -112,7 +112,12 @@ export function createServiceHost(
         .filter(conversation => conversation.engineSessionId && isAgentHostSession(conversation.engineSessionId))
         .map(conversation => ({
           id: conversation.engineSessionId!, engineType: conversation.engineType, title: conversation.engineTitle,
-          directory: conversation.directory, engineMeta: conversation.engineMeta,
+          directory: conversation.directory,
+          mode: conversation.mode,
+          modelId: conversation.modelId,
+          reasoningEffort: conversation.reasoningEffort,
+          allowAllPermissions: conversation.allowAllPermissions,
+          engineMeta: { ...conversation.engineMeta, localMessageCount: conversation.messageCount ?? 0 },
           time: { created: conversation.createdAt, updated: conversation.updatedAt },
         })),
     });

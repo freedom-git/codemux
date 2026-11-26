@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import WebSocket, { WebSocketServer } from "ws";
-import { chatReducer, sessionReducer, type ChatAction, type ChatState, type SessionAction, type SessionState, type StateAction, type RootState } from "@microsoft/agent-host-protocol";
+import { changesetReducer, chatReducer, sessionReducer, type ChangesetAction, type ChangesetState, type ChatAction, type ChatState, type SessionAction, type SessionState, type StateAction, type RootState } from "@microsoft/agent-host-protocol";
 import type { Wire } from "../../../../../electron/main/session-sources/agent-host/wire";
 import type { AgentHostEndpoint } from "../../../../../electron/main/session-sources/agent-host/discovery";
 
@@ -32,6 +32,10 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
   let chat = { resource: chatUri, title: "Native editor chat", status: 1, modifiedAt: now, turns: [] } as ChatState;
   const extraChats = new Map<string, ChatState>();
   const extraSessions = new Map<string, SessionState>();
+  const tombstonedSessions = new Set<string>();
+  const changesets = new Map<string, ChangesetState>();
+  const resources = new Map<string, { data: string; encoding: "utf-8" | "base64"; contentType?: string }>();
+  let stopBackgroundWorkResult = true;
   let rootConfig: RootState["config"] | undefined;
   let seq = 0;
   const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -50,14 +54,17 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
       }
       if (channel === chatUri) chat = chatReducer(chat, action as ChatAction);
       else if (extraChats.has(channel)) extraChats.set(channel, chatReducer(extraChats.get(channel)!, action as ChatAction));
-      if (channel === sessionUri) session = sessionReducer(session, action as SessionAction);
+      else if (changesets.has(channel)) changesets.set(channel, changesetReducer(changesets.get(channel)!, action as ChangesetAction));
+      else if (channel === sessionUri) session = sessionReducer(session, action as SessionAction);
       else if (extraSessions.has(channel)) extraSessions.set(channel, sessionReducer(extraSessions.get(channel)!, action as SessionAction));
     }
     const params = { channel, action, serverSeq: ++seq, ...(origin ? { origin } : {}), ...(rejectionReason ? { rejectionReason } : {}) };
     for (const [ws, client] of clients) if (ws.readyState === WebSocket.OPEN && client.subscriptions.has(channel)) ws.send(JSON.stringify({ jsonrpc: "2.0", method: "action", params }));
   };
   const fixture = {
-    endpoint, sessionUri, chatUri, requests, broadcast, extraChats, extraSessions,
+    endpoint, sessionUri, chatUri, requests, broadcast, extraChats, extraSessions, tombstonedSessions, changesets, resources,
+    get stopBackgroundWorkResult() { return stopBackgroundWorkResult; },
+    set stopBackgroundWorkResult(value: boolean) { stopBackgroundWorkResult = value; },
     get rootConfig() { return rootConfig; },
     set rootConfig(value: RootState["config"] | undefined) { rootConfig = value; },
     models: [{ id: "test-model", name: "Test", provider }] as NonNullable<RootState["agents"][number]["models"]>,
@@ -174,12 +181,37 @@ export async function createAgentHostFixture(provider = "copilotcli", transport:
           ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "Session unavailable" } }));
           return;
         }
-        client.subscriptions.add(params.channel);
-        const snapshot = { resource: params.channel, fromSeq: seq, state: structuredClone(params.channel === chatUri ? chat : extraChats.get(params.channel) ?? extraSessions.get(params.channel) ?? session) };
+        const channelStr = String(params.channel);
+        if (tombstonedSessions.has(channelStr)) {
+          ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32001, message: `Session was explicitly deleted: ${channelStr}` } }));
+          return;
+        }
+        const isCs = channelStr.startsWith("ahp-folder-changeset:") || channelStr.includes("/changeset/");
+        if (isCs && !changesets.has(channelStr)) {
+          ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "Changeset not available" } }));
+          return;
+        }
+        client.subscriptions.add(channelStr);
+        const targetState = isCs
+          ? changesets.get(channelStr)!
+          : channelStr === chatUri
+            ? chat
+            : extraChats.get(channelStr) ?? extraSessions.get(channelStr) ?? session;
+        const snapshot = { resource: channelStr, fromSeq: seq, state: structuredClone(targetState) };
         const interleave = fixture.snapshotInterleave;
         fixture.snapshotInterleave = undefined;
         interleave?.();
         result({ snapshot });
+      } else if (method === "resourceRead") {
+        const uri = String(params.uri ?? "");
+        const res = resources.get(uri);
+        if (!res) {
+          ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: `Resource not found: ${uri}` } }));
+          return;
+        }
+        result(res);
+      } else if (method === "vscode/stopBackgroundWork") {
+        result({ stopped: stopBackgroundWorkResult });
       } else if (method === "dispatchAction") {
         const reject = fixture.rejectNext;
         fixture.rejectNext = false;

@@ -2,6 +2,7 @@ import {
   createEffect,
   createSignal,
   createMemo,
+  on,
   Show,
   For,
   onMount,
@@ -77,6 +78,7 @@ import type {
   ScheduledTask,
   ScheduledTaskCreateRequest,
   ScheduledTaskUpdateRequest,
+  UnifiedSessionWorkspaceState,
 } from "../types/unified";
 import WorktreeModal from "../components/WorktreeModal";
 import MergeWorktreeModal from "../components/MergeWorktreeModal";
@@ -111,7 +113,7 @@ import { createStreamScroll, isNearScrollBottom } from "../lib/stream-scroll";
 
 import { InputAreaQuestion } from "../components/InputAreaQuestion";
 import { InputAreaPermission } from "../components/InputAreaPermission";
-import { TodoDock } from "../components/TodoDock";
+import { SessionWorkspaceBar } from "../components/SessionWorkspaceBar";
 const FileExplorer = lazy(() =>
   import("../components/FileExplorer").then((m) => ({
     default: m.FileExplorer,
@@ -214,6 +216,49 @@ export default function Chat() {
     messageId: string;
     partId: string;
   } | null>(null);
+
+  const [sessionWorkspaces, setSessionWorkspaces] = createSignal<Record<string, UnifiedSessionWorkspaceState>>({});
+  const workspaceLoadVersions = new Map<string, number>();
+  let localWorkspaceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const refreshSessionWorkspace = async (sessionId: string) => {
+    if (!sessionId || removedSessionIds.has(sessionId) || !gatewayConnected()) return;
+    const version = (workspaceLoadVersions.get(sessionId) ?? 0) + 1;
+    workspaceLoadVersions.set(sessionId, version);
+    try {
+      const ws = await gateway.getSessionWorkspace(sessionId);
+      if (disposed || removedSessionIds.has(sessionId) || workspaceLoadVersions.get(sessionId) !== version) return;
+      setSessionWorkspaces((prev) => ({ ...prev, [sessionId]: ws }));
+    } catch (err) {
+      logger.debug("[Workspace] Failed to load session workspace:", err);
+    }
+  };
+
+  const currentSessionWorkspace = createMemo(() => {
+    const sid = sessionStore.current;
+    return sid ? sessionWorkspaces()[sid] : undefined;
+  });
+
+  createEffect(() => {
+    const sid = sessionStore.current;
+    const connected = gatewayConnected();
+    if (sid && connected) {
+      void refreshSessionWorkspace(sid);
+    }
+  });
+
+  createEffect(
+    on(
+      sending,
+      (isSending, wasSending) => {
+        const sid = sessionStore.current;
+        if (wasSending && !isSending && sid && !isAuthoritativeSession(sid)) {
+          void refreshSessionWorkspace(sid);
+        }
+      },
+      { defer: true },
+    ),
+  );
 
   // Track sessions that completed while user was viewing another session
   const [unreadSessions, setUnreadSessions] = createSignal<Set<string>>(new Set());
@@ -405,22 +450,24 @@ export default function Chat() {
     const sid = sessionStore.current;
     if (!sid) return [];
     const ref = todoPartRef();
-    if (!ref || ref.sessionId !== sid) return [];
-    const parts = messageStore.part[ref.messageId];
-    if (!parts) return [];
-    const part = parts.find(p => p.id === ref.partId);
-    if (!part || part.type !== "tool") return [];
-    const tp = part as any;
-    const status = tp.state?.status;
-    if (status !== "completed" && status !== "running") return [];
-    const todos = tp.state?.input?.todos;
-    if (Array.isArray(todos) && todos.length > 0) {
-      return todos as Array<{
-        content: string;
-        status: "pending" | "in_progress" | "completed";
-      }>;
+    if (ref && ref.sessionId === sid) {
+      const parts = messageStore.part[ref.messageId];
+      const part = parts?.find(p => p.id === ref.partId);
+      if (part && part.type === "tool") {
+        const tp = part as any;
+        const status = tp.state?.status;
+        if (status === "completed" || status === "running") {
+          const todos = tp.state?.input?.todos;
+          if (Array.isArray(todos) && todos.length > 0) {
+            return todos as Array<{
+              content: string;
+              status: "pending" | "in_progress" | "completed";
+            }>;
+          }
+        }
+      }
     }
-    return [];
+    return currentSessionWorkspace()?.todos ?? [];
   });
 
   const getDisplayTitle = (title: string): string => {
@@ -1524,7 +1571,18 @@ export default function Chat() {
           logger.debug("[WS] message.queued.consumed for session:", sessionId, messageId);
           consumeQueuedPreview(sessionId, clientMessageId);
         },
-        onFileChanged: handleFileChanged,
+        onFileChanged: (event: { type: string; path: string; directory: string }) => {
+          handleFileChanged(event);
+          const sid = sessionStore.current;
+          if (sid && !isAuthoritativeSession(sid)) {
+            clearTimeout(localWorkspaceRefreshTimer);
+            localWorkspaceRefreshTimer = setTimeout(() => {
+              if (!disposed && sessionStore.current === sid) {
+                void refreshSessionWorkspace(sid);
+              }
+            }, 600);
+          }
+        },
         onCommandsChanged: (engineType: EngineType, commands: EngineCommand[]) => {
           // Update available commands if the changed engine is the currently active one
           if (engineType === currentEngineType()) {
@@ -1595,6 +1653,10 @@ export default function Chat() {
           if (Object.prototype.hasOwnProperty.call(settings, "pinnedSessions")) {
             syncPinnedSessionsFromSettings();
           }
+        },
+        onSessionWorkspaceUpdated: (workspace: UnifiedSessionWorkspaceState) => {
+          if (disposed || removedSessionIds.has(workspace.sessionId)) return;
+          setSessionWorkspaces((prev) => ({ ...prev, [workspace.sessionId]: workspace }));
         },
       };
 
@@ -2173,6 +2235,12 @@ export default function Chat() {
     setMessageStore("permission", sessionId, undefined as any);
     setMessageStore("question", sessionId, undefined as any);
     setMessageStore("queued", sessionId, undefined as any);
+    setSessionWorkspaces((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, sessionId)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
     clearInputDraft(sessionId);
 
     // Clear todoPartRef if it points to the deleted session
@@ -3768,9 +3836,20 @@ export default function Chat() {
                       </Show>
                     </div>
                   </Show>
-                  {/* TodoDock — persistent task list above input */}
-                  <Show when={currentTodos().length > 0}>
-                    <TodoDock todos={currentTodos()} isWorking={sending()} />
+                  {/* Standalone SessionWorkspaceBar only when PromptInput is hidden (archived or pending permission/question) */}
+                  <Show when={sessionStore.current && !currentSessionUnavailable() && (currentSessionArchived() || currentPermissions().length > 0 || currentQuestions().length > 0)}>
+                    <SessionWorkspaceBar
+                      workspace={currentSessionWorkspace()}
+                      todos={currentTodos()}
+                      isWorking={sending()}
+                      onPreviewFile={(fileId) => gateway.previewSessionFile(sessionStore.current!, fileId)}
+                      onStopTask={async (taskId) => {
+                        const sid = sessionStore.current;
+                        if (!sid) return;
+                        await gateway.stopSessionBackgroundTask(sid, taskId);
+                        await refreshSessionWorkspace(sid);
+                      }}
+                    />
                   </Show>
 
                   {/* Permission prompt replaces input when permissions are pending */}
@@ -3846,6 +3925,23 @@ export default function Chat() {
                       images={currentDraft().images}
                       onImagesChange={(images) => updateCurrentDraft({ images })}
                       focusRequest={promptFocusRequest()}
+                      headerContent={
+                        <Show when={sessionStore.current && !currentSessionUnavailable()}>
+                          <SessionWorkspaceBar
+                            inline
+                            workspace={currentSessionWorkspace()}
+                            todos={currentTodos()}
+                            isWorking={sending()}
+                            onPreviewFile={(fileId) => gateway.previewSessionFile(sessionStore.current!, fileId)}
+                            onStopTask={async (taskId) => {
+                              const sid = sessionStore.current;
+                              if (!sid) return;
+                              await gateway.stopSessionBackgroundTask(sid, taskId);
+                              await refreshSessionWorkspace(sid);
+                            }}
+                          />
+                        </Show>
+                      }
                       toolbarContent={
                         <Show when={sessionStore.current}>
                           <SessionControls

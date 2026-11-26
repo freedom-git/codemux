@@ -657,4 +657,35 @@ describe("EngineManager catalog integration", () => {
     adapter.emit("message.queued", { sessionId: "legacy-thread", messageId: "queued-2", queuePosition: 0 });
     expect(received.mock.calls[1][0].sessionId).toBe(replacement.id);
   });
+
+  it("keeps a rebound empty draft conversation catalogAvailable without suppressing the new session ID", async () => {
+    publish();
+    const original = manager.listAllSessions()[0];
+
+    // Simulate an intermediate catalog update arriving BEFORE session.rebound,
+    // which creates a transient duplicate empty imported row for the new engine session.
+    const reboundSession = {
+      ...session("resurrected-thread"),
+      title: "昨日工作总结",
+      connection: { source: "VS Code", available: true, readOnly: false },
+    } as UnifiedSession;
+    adapter.snapshot.sessions = [reboundSession];
+    publish();
+    expect(conversationStore.findByEngineSession("resurrected-thread", adapter.engineType, "source-a")?.id).not.toBe(original.id);
+
+    // Now session.rebound arrives to rebind the original conversation in place.
+    adapter.emit("session.rebound", {
+      previousSessionId: "native-thread",
+      session: reboundSession,
+    });
+
+    // Subsequent complete catalog updates MUST NOT treat resurrected-thread as suppressed!
+    publish();
+
+    const after = await manager.getSession(original.id);
+    expect(after?.catalogAvailable).toBe(true);
+    expect(after?.title).toBe("昨日工作总结");
+    expect(conversationStore.isSessionSuppressed(adapter.engineType, "resurrected-thread", "source-a")).toBe(false);
+    expect(manager.listAllSessions().map((s) => s.id)).toEqual([original.id]);
+  });
 });

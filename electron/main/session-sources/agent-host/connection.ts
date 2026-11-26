@@ -3,15 +3,21 @@ import { lookup } from "node:dns";
 import { createConnection } from "node:net";
 import WebSocket from "ws";
 import {
-  chatReducer, rootReducer, sessionReducer, SUPPORTED_PROTOCOL_VERSIONS,
-  type ActionEnvelope, type ChatAction, type ChatState, type RootAction, type RootState,
-  type SessionAction, type SessionState, type Snapshot, type StateAction, type CommandMap,
+  changesetReducer, chatReducer, rootReducer, sessionReducer, SUPPORTED_PROTOCOL_VERSIONS,
+  type ActionEnvelope, type ChangesetAction, type ChangesetState, type ChatAction, type ChatState,
+  type RootAction, type RootState, type SessionAction, type SessionState, type Snapshot, type StateAction, type CommandMap,
 } from "@microsoft/agent-host-protocol";
 import { AhpClient, type AhpTransport, type JsonRpcMessage, type TransportFrame } from "@microsoft/agent-host-protocol/client";
 import type { AgentHostEndpoint } from "./discovery";
 import type { Wire } from "./wire";
 
 export const ROOT = "ahp-root://";
+
+export function isChangesetChannel(resource: string): boolean {
+  return resource.includes("/changeset/")
+    || resource.startsWith("ahp-changeset:")
+    || resource.startsWith("ahp-folder-changeset:");
+}
 
 class LocalTransport implements AhpTransport {
   private frames: TransportFrame[] = [];
@@ -60,6 +66,7 @@ export class AgentHostConnection {
   readonly id = randomUUID();
   readonly sessions = new Map<string, SessionState>();
   readonly chats = new Map<string, ChatState>();
+  readonly changesets = new Map<string, ChangesetState>();
   root?: RootState;
   version?: string;
   connected = false;
@@ -127,6 +134,10 @@ export class AgentHostConnection {
     return this.client!.request(method, params);
   }
 
+  requestExtension<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
+    return (this.client as unknown as { request(m: string, p: unknown): Promise<T> }).request(method, params);
+  }
+
   async subscribe(channel: string): Promise<void> {
     const pending = this.loading.get(channel);
     if (pending) return pending;
@@ -144,6 +155,7 @@ export class AgentHostConnection {
   private snapshot(snapshot: Snapshot) {
     const { resource, state, fromSeq } = snapshot;
     if (resource === ROOT) this.root = state as RootState;
+    else if (isChangesetChannel(resource)) this.changesets.set(resource, state as ChangesetState);
     else if (resource.startsWith("ahp-session:")) this.sessions.set(resource, state as SessionState);
     else if (resource.startsWith("ahp-chat:")) this.chats.set(resource, state as ChatState);
     this.sequences.set(resource, fromSeq);
@@ -172,6 +184,8 @@ export class AgentHostConnection {
     if (seq === undefined || envelope.serverSeq <= seq) return;
     this.sequences.set(envelope.channel, envelope.serverSeq);
     if (envelope.channel === ROOT && this.root) this.root = rootReducer(this.root, envelope.action as RootAction);
+    const changeset = this.changesets.get(envelope.channel);
+    if (changeset) this.changesets.set(envelope.channel, changesetReducer(changeset, envelope.action as ChangesetAction));
     const session = this.sessions.get(envelope.channel);
     if (session) this.sessions.set(envelope.channel, sessionReducer(session, envelope.action as SessionAction));
     const chat = this.chats.get(envelope.channel);

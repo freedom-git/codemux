@@ -12,10 +12,12 @@ import {
   type ContextWindowOption,
   type EngineType, type EngineCapabilities, type EngineCatalogSnapshot, type SessionSourceState, type MessagePromptContent,
   type PermissionReply, type ReasoningEffort, type UnifiedMessage, type UnifiedSession, type UnifiedModelInfo,
+  type UnifiedSessionFilePreview, type UnifiedSessionWorkspaceState,
 } from "../../../../src/types/unified";
 import { agentHostEndpointKey, discoverAgentHosts, type AgentHostEndpoint } from "./discovery";
 import { AgentHostConnection, ROOT } from "./connection";
 import { activity, inputAnswers, nativeChatId, projectChat, projectInputs, scopedId, type PermissionRoute, type QuestionRoute, type TurnProjectionCache } from "./projection";
+import { projectSessionWorkspace, readAgentHostFilePreview, resolvePreferredChangesetUri } from "./workspace";
 import { SESSION_FLAGS, type Wire } from "./wire";
 import { engineProvider, providerEngine, supportedEngines, agentHostCatalogId } from "./providers";
 
@@ -101,9 +103,12 @@ interface Entry {
   source: string;
   sessionUri: string;
   chatUri: string;
+  changesetUri?: string;
+  workspaceDigest?: string;
   session: UnifiedSession;
   host?: AgentHostConnection;
   attached: boolean;
+  emptySeededDraft?: boolean;
   messages: Map<string, UnifiedMessage>;
   turns: TurnProjectionCache;
 }
@@ -137,6 +142,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   private initialRefreshDone = false;
   private configuredHosts = new WeakSet<AgentHostConnection>();
   private createdSessions = new Set<string>();
+  private suppressedStandaloneKeys = new Map<string, string>();
   private publishedCatalogDigests = new Map<EngineType, string>();
 
   constructor(private readonly options: AgentHostServiceOptions = {}) { super(); this.enabled = options.enabled === true; }
@@ -145,6 +151,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     this.running = false;
     this.initialRefreshDone = false;
     this.createdSessions.clear();
+    this.suppressedStandaloneKeys.clear();
     this.publishedCatalogDigests.clear();
     this.generation++;
     clearTimeout(this.timer);
@@ -200,9 +207,123 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       if (typeof source !== "string" || typeof sessionUri !== "string" || typeof chatUri !== "string"
         || typeof provider !== "string" || providerEngine(provider) !== session.engineType
         || session.id !== nativeChatId(source, chatUri)) continue;
+      const localMessageCount = typeof session.engineMeta?.localMessageCount === "number"
+        ? session.engineMeta.localMessageCount
+        : 0;
+      const { localMessageCount: _dropCount, ...cleanMeta } = session.engineMeta ?? {};
       this.entries.set(session.id, { provider, source, sessionUri, chatUri, session: { ...session,
+        engineMeta: cleanMeta,
         projectId: scopedId(source, session.directory), connection: this.connection() },
-        attached: false, messages: new Map(), turns: new Map() });
+        attached: false, emptySeededDraft: localMessageCount === 0, messages: new Map(), turns: new Map() });
+    }
+  }
+  private isTombstonedSessionError(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+    const code = (error as { code?: unknown }).code;
+    const message = String((error as { message?: unknown }).message ?? "");
+    return code === -32001 || /explicitly deleted|tombstoned|Session not found/i.test(message);
+  }
+  private async resurrectDeletedEmptyDraft(entry: Entry, host: AgentHostConnection): Promise<Entry | undefined> {
+    const oldId = entry.session.id;
+    const oldTitle = entry.session.title?.trim();
+    const oldDir = entry.session.directory?.trim();
+    const isScratchCopilotChatDir = Boolean(oldDir && /[\\/]\.copilot[\\/]chats[\\/]/i.test(oldDir));
+    const resolvedDir = oldDir && oldDir !== "." && !isScratchCopilotChatDir ? resolvePath(oldDir) : undefined;
+    const workingDirectories = resolvedDir ? [pathToFileURL(resolvedDir).href] : undefined;
+    const isExistingWorktree = Boolean(resolvedDir && /\.worktrees[\\/]/i.test(resolvedDir));
+    const useWorktree = isExistingWorktree ? false : this.options.isWorktreeEnabled?.() === true;
+    const config = await this.resolveInitialSessionConfig(host, entry.provider, workingDirectories?.[0], useWorktree);
+    const newSessionUri = `ahp-session:/${randomUUID()}`;
+    await host.request("createSession", {
+      channel: newSessionUri,
+      provider: entry.provider,
+      ...(workingDirectories ? { workingDirectories } : {}),
+      config,
+    });
+    this.createdSessions.add(newSessionUri);
+    await host.subscribe(newSessionUri);
+    let session = host.sessions.get(newSessionUri);
+    const newChatUri = session?.defaultChat ?? session?.chats?.[0]?.resource;
+    if (!session || !newChatUri) {
+      this.createdSessions.delete(newSessionUri);
+      return undefined;
+    }
+    if (oldTitle && session.defaultChat === newChatUri) {
+      await host.dispatch(newSessionUri, { type: "session/titleChanged", title: oldTitle }).catch(() => {});
+      session = host.sessions.get(newSessionUri) ?? session;
+    }
+    this.catalogSession(host, newSessionUri, session);
+    const newId = nativeChatId(host.endpoint.source, newChatUri);
+    const nextEntry = this.entries.get(newId);
+    if (!nextEntry) {
+      this.createdSessions.delete(newSessionUri);
+      return undefined;
+    }
+    nextEntry.emptySeededDraft = true;
+    this.createdSessions.add(newSessionUri);
+    this.entries.delete(oldId);
+    this.emit("session.rebound", { previousSessionId: oldId, session: nextEntry.session });
+    this.publishCatalog();
+    await host.subscribe(newChatUri);
+    nextEntry.attached = true;
+    const createdSession = host.sessions.get(newSessionUri);
+    const createdChat = host.chats.get(newChatUri);
+    if (createdSession && createdChat) {
+      const approval = resolveApprovalProperty(createdSession, createdChat, host.root);
+      const wantApprove = entry.session.allowAllPermissions ?? true;
+      if (approval?.supported && approval.active !== wantApprove) {
+        await this.dispatchConfigProperty(
+          nextEntry,
+          host,
+          createdSession,
+          createdChat,
+          approval.key,
+          approval.prop,
+          wantApprove ? approval.onValue : approval.offValue,
+        ).catch(() => {});
+      }
+    }
+    this.publishChat(nextEntry);
+    return nextEntry;
+  }
+  private async reconcileOmittedEntriesForSource(source: string): Promise<void> {
+    const candidates = [...this.hosts.values()].filter(h => h.connected && h.endpoint.source === source);
+    if (!candidates.length) return;
+    for (const [id, entry] of [...this.entries.entries()]) {
+      if (entry.source !== source || entry.host?.connected) continue;
+      if (this.createdSessions.has(entry.sessionUri)) continue;
+      const probeHost = this.selectHostForSession(candidates, entry.provider, entry.session.directory) ?? candidates[0];
+      if (!probeHost) continue;
+      try {
+        await probeHost.subscribe(entry.sessionUri);
+        const session = probeHost.sessions.get(entry.sessionUri);
+        if (session && !isExternalCliSession(session)) {
+          // Idle provisional drafts (`lifecycle: "creating"`) are omitted from `listSessions`
+          // until their first turn starts — register them in `createdSessions` so subsequent
+          // poll cycles keep `entry.host` attached instead of marking them unavailable!
+          if (entry.emptySeededDraft || session.lifecycle === "creating") {
+            this.createdSessions.add(entry.sessionUri);
+          }
+          this.catalogSession(probeHost, entry.sessionUri, session);
+          // Keep empty unused drafts subscribed so Agent Host's 30s unused-draft GC does not reap them.
+          if (entry.emptySeededDraft || session.lifecycle === "creating") {
+            const cUri = entry.chatUri;
+            await probeHost.subscribe(cUri).catch(() => {});
+            entry.attached = true;
+          }
+        }
+      } catch (error) {
+        if (!this.isTombstonedSessionError(error)) continue;
+        if (entry.emptySeededDraft && entry.messages.size === 0) {
+          await this.resurrectDeletedEmptyDraft(entry, probeHost).catch(() => {
+            this.clearInputs(id);
+            this.entries.delete(id);
+          });
+        } else {
+          this.clearInputs(id);
+          this.entries.delete(id);
+        }
+      }
     }
   }
   private connection(host?: AgentHostConnection, writable = true) {
@@ -212,6 +333,109 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       capabilities: { ...this.getCapabilities(), imageAttachment: false, modelSwitchable: false, dynamicModes: false, allowAllPermissionsSupported: false },
       sharingStatus: this.enabled ? host?.connected ? "connected" as const : "unavailable" as const : "disabled" as const,
       runtimeVersion: host?.version };
+  }
+  private hasExternalSessionActivity(host: AgentHostConnection, session: SessionState, chat?: ChatSummary | ChatState): boolean {
+    if ((session.activeClients ?? []).some(client => client.clientId !== host.id)) return true;
+    if ((session.status & SESSION_FLAGS.active) !== 0) return true;
+    if (chat && (chat.status & SESSION_FLAGS.active) !== 0) return true;
+    if (chat && "activeTurn" in chat && Boolean(chat.activeTurn)) return true;
+    return false;
+  }
+  private hostLiveScore(host: AgentHostConnection): number {
+    let score = (host.root?.activeSessions ?? 0) * 10;
+    for (const [uri, session] of host.sessions) {
+      if (isExternalCliSession(session)) continue;
+      if ((session.activeClients ?? []).some(client => client.clientId !== host.id)) score += 100;
+      if ((session.status & SESSION_FLAGS.active) !== 0) score += 20;
+      if (this.createdSessions.has(uri)) score += 50;
+    }
+    for (const entry of this.entries.values()) {
+      if (entry.host === host && entry.attached) score += 5;
+    }
+    return score;
+  }
+  private resolveOwnerHost(source: string, chatUri: string): { owner?: AgentHostConnection; sessionUri?: string; session?: SessionState; competing: boolean } {
+    const candidates: Array<{
+      host: AgentHostConnection;
+      sessionUri: string;
+      session: SessionState;
+      chat: ChatSummary | ChatState;
+      chatLive: number;
+      hostLive: number;
+      standalone: number;
+    }> = [];
+    for (const candidate of this.hosts.values()) {
+      if (!candidate.connected || candidate.endpoint.source !== source) continue;
+      for (const [sUri, state] of candidate.sessions) {
+        if (isExternalCliSession(state)) continue;
+        const summary = state.chats?.find(c => c.resource === chatUri);
+        if (!summary) continue;
+        const fullChat = candidate.chats.get(chatUri) ?? summary;
+        candidates.push({
+          host: candidate,
+          sessionUri: sUri,
+          session: state,
+          chat: fullChat,
+          chatLive: this.hasExternalSessionActivity(candidate, state, fullChat) || (this.createdSessions.has(sUri) && candidate.sessions.has(sUri)) ? 1 : 0,
+          hostLive: this.hostLiveScore(candidate) > 0 ? 1 : 0,
+          standalone: candidate.endpoint.type === "standalone" ? 1 : 0,
+        });
+        break;
+      }
+    }
+    if (candidates.length === 0) return { competing: false };
+    if (candidates.length === 1) {
+      const only = candidates[0];
+      return { owner: only.host, sessionUri: only.sessionUri, session: only.session, competing: false };
+    }
+    candidates.sort((a, b) => (b.chatLive - a.chatLive) || (b.hostLive - a.hostLive) || (b.standalone - a.standalone));
+    const [best, second] = candidates;
+    const tied = best.chatLive === second.chatLive
+      && best.hostLive === second.hostLive
+      && best.standalone === second.standalone;
+    if (tied) return { competing: true };
+    return { owner: best.host, sessionUri: best.sessionUri, session: best.session, competing: false };
+  }
+  private reconcileSourceCatalog(source: string) {
+    for (const host of this.hosts.values()) {
+      if (!host.connected || host.endpoint.source !== source) continue;
+      for (const [uri, session] of host.sessions) {
+        this.catalogSession(host, uri, session);
+      }
+    }
+  }
+  private async pruneRedundantStandaloneHosts(endpoints: AgentHostEndpoint[]): Promise<void> {
+    const order = new Map(endpoints.map((ep, idx) => [agentHostEndpointKey(ep), idx]));
+    const bySource = new Map<string, AgentHostConnection[]>();
+    for (const host of this.hosts.values()) {
+      if (!host.connected || host.endpoint.type !== "standalone") continue;
+      const list = bySource.get(host.endpoint.source) ?? [];
+      list.push(host);
+      bySource.set(host.endpoint.source, list);
+    }
+    for (const [source, list] of bySource) {
+      if (list.length <= 1) continue;
+      list.sort((a, b) => {
+        const diff = this.hostLiveScore(b) - this.hostLiveScore(a);
+        if (diff !== 0) return diff;
+        return (order.get(agentHostEndpointKey(a.endpoint)) ?? 0) - (order.get(agentHostEndpointKey(b.endpoint)) ?? 0);
+      });
+      const primary = list[0];
+      const primaryKey = agentHostEndpointKey(primary.endpoint);
+      let pruned = false;
+      for (const extra of list.slice(1)) {
+        if (this.hostLiveScore(extra) > 0) continue;
+        const extraKey = agentHostEndpointKey(extra.endpoint);
+        this.suppressedStandaloneKeys.set(extraKey, primaryKey);
+        this.hosts.delete(extraKey);
+        for (const entry of this.entries.values()) {
+          if (entry.host === extra) entry.host = undefined;
+        }
+        await extra.close();
+        pruned = true;
+      }
+      if (pruned) this.reconcileSourceCatalog(source);
+    }
   }
   private async refreshHosts(): Promise<void> {
     if (this.refresh) return this.refresh;
@@ -223,21 +447,34 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       for (const [key, host] of this.hosts) {
         if (!present.has(key) || !host.connected) { this.hosts.delete(key); await host.close(); }
       }
+      for (const [suppressedKey, primaryKey] of this.suppressedStandaloneKeys) {
+        if (!present.has(suppressedKey) || !present.has(primaryKey) || !this.hosts.get(primaryKey)?.connected) {
+          this.suppressedStandaloneKeys.delete(suppressedKey);
+        }
+      }
       for (const endpoint of endpoints) {
         if (generation !== this.generation || !this.enabled) return;
         const key = agentHostEndpointKey(endpoint);
+        const primaryKey = this.suppressedStandaloneKeys.get(key);
+        if (primaryKey && this.hosts.get(primaryKey)?.connected) continue;
         let host = this.hosts.get(key);
         if (!host) {
           const created = (this.options.createConnection ?? ((entry, options) => new AgentHostConnection(entry, options)))(endpoint, {
             onChange: (channel, action) => this.changed(created, channel, action),
             onCatalogChange: () => this.scheduleRefresh(),
             onClose: () => {
+              if (this.hosts.get(key) === created) this.hosts.delete(key);
+              for (const [suppressedKey, winnerKey] of this.suppressedStandaloneKeys) {
+                if (winnerKey === key) this.suppressedStandaloneKeys.delete(suppressedKey);
+              }
               for (const entry of this.entries.values()) if (entry.host === created) {
+                entry.host = undefined;
                 entry.session = { ...entry.session, connection: this.connection(), activityStatus: "idle" };
                 this.clearInputs(entry.session.id);
               }
+              this.reconcileSourceCatalog(created.endpoint.source);
               this.publishCatalog();
-              this.scheduleRefresh();
+              if (!this.suppressedStandaloneKeys.has(key)) this.scheduleRefresh();
             },
           });
           host = created;
@@ -294,6 +531,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
               entry.host = undefined;
               entry.session = { ...entry.session, connection: this.connection(), activityStatus: "idle" };
               this.clearInputs(entry.session.id);
+              this.reconcileSourceCatalog(host.endpoint.source);
             }
           }
           for (const entry of this.entries.values()) {
@@ -308,7 +546,15 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
           }
         } catch { await host.close(); }
       }
-      if (generation === this.generation && this.enabled) this.initialRefreshDone = true;
+      if (generation === this.generation && this.enabled) {
+        await this.pruneRedundantStandaloneHosts(endpoints);
+        const sources = new Set([...this.hosts.values()].filter(h => h.connected).map(h => h.endpoint.source));
+        for (const source of sources) {
+          this.reconcileSourceCatalog(source);
+          await this.reconcileOmittedEntriesForSource(source);
+        }
+        this.initialRefreshDone = true;
+      }
     })().finally(() => {
       this.refresh = undefined;
       this.publishCatalog();
@@ -339,10 +585,16 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       if (!providerEngine(provider) || !host.root?.agents.some(agent => agent.provider === provider) || chat.interactivity === "hidden") continue;
       const id = nativeChatId(host.endpoint.source, chat.resource);
       const old = this.entries.get(id);
-      // Two live writers claiming the same identity are ambiguous, not a failover.
-      const competing = [...this.hosts.values()].some(other => other !== host && other.connected && other.endpoint.source === host.endpoint.source
-        && [...other.sessions.values()].some(state => state.chats?.some(candidate =>
-          candidate.resource === chat.resource)));
+      const resolution = this.resolveOwnerHost(host.endpoint.source, chat.resource);
+      const competing = resolution.competing;
+      const winningHost = competing ? undefined : (resolution.owner ?? host);
+      if (!competing && winningHost && winningHost !== host) {
+        admitted.add(chat.resource);
+        if (old?.host !== winningHost && resolution.session && resolution.sessionUri) {
+          this.catalogSession(winningHost, resolution.sessionUri, resolution.session);
+        }
+        continue;
+      }
       // A native chat changing harness must not silently reuse a saved engine binding.
       if (old && old.provider !== provider) {
         old.host = undefined;
@@ -352,9 +604,13 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       }
       const entry: Entry = old ?? { provider, source: host.endpoint.source, sessionUri: uri, chatUri: chat.resource,
         session: {} as UnifiedSession, attached: false, messages: new Map(), turns: new Map() };
-      entry.host = competing ? undefined : host;
+      entry.host = competing ? undefined : winningHost;
       entry.sessionUri = uri;
-      entry.session = this.describe(entry, session, host.chats.get(chat.resource) ?? chat);
+      const fullChat = host.chats.get(chat.resource);
+      if (fullChat && (fullChat.turns.length > 0 || Boolean(fullChat.activeTurn))) {
+        entry.emptySeededDraft = false;
+      }
+      entry.session = this.describe(entry, session, fullChat ?? chat);
       if (competing) this.clearInputs(id);
       this.entries.set(id, entry);
       admitted.add(chat.resource);
@@ -425,12 +681,52 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     }
     const session = host.sessions.get(channel);
     if (session) { this.catalogSession(host, channel, session); this.publishCatalog(); }
-    for (const entry of this.entries.values()) if (entry.host === host && entry.chatUri === channel) this.dirty.add(entry.session.id);
+    for (const entry of this.entries.values()) {
+      if (
+        entry.host === host
+        && (
+          entry.chatUri === channel
+          || (entry.attached && (entry.sessionUri === channel || entry.changesetUri === channel))
+        )
+      ) {
+        this.dirty.add(entry.session.id);
+      }
+    }
     if (this.dirty.size && !this.publishing) this.publishing = setTimeout(() => {
       this.publishing = undefined;
       for (const id of this.dirty) { const entry = this.entries.get(id); if (entry) this.publishChat(entry); }
       this.dirty.clear();
     }, 30);
+  }
+  private async ensureChangesetSubscription(entry: Entry, host: AgentHostConnection): Promise<void> {
+    const session = host.sessions.get(entry.sessionUri);
+    const chat = host.chats.get(entry.chatUri);
+    const uri = resolvePreferredChangesetUri(session, chat);
+    if (!uri) return;
+    entry.changesetUri = uri;
+    if (!host.changesets.has(uri)) {
+      await host.subscribe(uri);
+    }
+  }
+  private publishWorkspace(entry: Entry) {
+    if (!entry.attached || !entry.host?.connected) return;
+    const host = entry.host;
+    const session = host.sessions.get(entry.sessionUri);
+    const chat = host.chats.get(entry.chatUri);
+    void this.ensureChangesetSubscription(entry, host).catch(() => {});
+    const changeset = entry.changesetUri ? host.changesets.get(entry.changesetUri) : undefined;
+    const workspace = projectSessionWorkspace(
+      entry.session.id,
+      entry.session.directory,
+      session,
+      chat,
+      changeset,
+      entry.chatUri,
+    );
+    const digest = JSON.stringify(workspace);
+    if (digest === entry.workspaceDigest) return;
+    entry.workspaceDigest = digest;
+    this.emit("session.workspace.updated", workspace);
   }
   private publishChat(entry: Entry) {
     const chat = entry.host?.chats.get(entry.chatUri), session = entry.host?.sessions.get(entry.sessionUri);
@@ -475,6 +771,7 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
       this.questions.set(route.question.id, route);
       if (JSON.stringify(previous?.question) !== JSON.stringify(route.question)) this.emit("question.asked", { question: route.question });
     }
+    this.publishWorkspace(entry);
   }
   private clearInputs(id: string) {
     for (const [key, queued] of this.queued) if (queued.sessionId === id) {
@@ -490,16 +787,17 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   }
   private publishCatalog() {
     if (!this.initialized) return;
+    const complete = !this.enabled || this.initialRefreshDone;
     for (const engine of supportedEngines) {
       const { projects, sessions } = this.catalogEntries(engine);
-      const digest = JSON.stringify({ enabled: this.enabled, projects, sessions });
+      const digest = JSON.stringify({ enabled: this.enabled, complete, projects, sessions });
       if (this.publishedCatalogDigests.get(engine) === digest) continue;
       this.publishedCatalogDigests.set(engine, digest);
       this.emit("catalog.updated", {
         sourceId: agentHostCatalogId(engine),
         engineType: engine,
         revision: String(++this.revision),
-        complete: true,
+        complete,
         projects,
         sessions,
       });
@@ -517,7 +815,8 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   }
   private catalog(engineType: EngineType): EngineCatalogSnapshot {
     const { projects, sessions } = this.catalogEntries(engineType);
-    return { sourceId: agentHostCatalogId(engineType), engineType, revision: String(++this.revision), complete: true, projects, sessions };
+    const complete = !this.enabled || this.initialRefreshDone;
+    return { sourceId: agentHostCatalogId(engineType), engineType, revision: String(++this.revision), complete, projects, sessions };
   }
   async getCatalog(engineType: EngineType) { this.seed(); return this.catalog(engineType); }
   async listSessions(engineType: EngineType, directory?: string) { return this.catalog(engineType).sessions.filter(session => !directory || session.directory === directory.replaceAll("\\", "/")); }
@@ -528,7 +827,18 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     if (meta?.ahpSource && meta.ahpChat && id !== nativeChatId(String(meta.ahpSource), String(meta.ahpChat))) throw new Error("VS Code session source does not match.");
   }
   private async attach(id: string, writable = false) {
-    const entry = this.entries.get(id);
+    let entry = this.entries.get(id);
+    if (entry && (!entry.host?.connected) && this.enabled && entry.emptySeededDraft && entry.messages.size === 0) {
+      const candidates = [...this.hosts.values()].filter(h => h.connected && h.endpoint.source === entry!.source);
+      const probeHost = this.selectHostForSession(candidates, entry.provider, entry.session.directory) ?? candidates[0];
+      if (probeHost) {
+        const resurrected = await this.resurrectDeletedEmptyDraft(entry, probeHost).catch(() => undefined);
+        if (resurrected) {
+          this.publishCatalog();
+          entry = resurrected;
+        }
+      }
+    }
     if (!entry || !this.enabled || !entry.host?.connected || (writable && !entry.session.connection?.available))
       throw new Error("The original VS Code session is unavailable. Reopen VS Code and enable sharing to continue.");
     const host = entry.host;
@@ -719,9 +1029,11 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
   async getHistoricalMessages(id: string) { return this.listMessages(id); }
   async sendMessage(id: string, content: MessagePromptContent[], options?: SendMessageOptions) {
     const { entry, host, chat } = await this.attach(id, true);
-    if (options?.mode && options.mode !== entry.session.mode) await this.setMode(id, options.mode);
+    const activeId = entry.session.id;
+    entry.emptySeededDraft = false;
+    if (options?.mode && options.mode !== entry.session.mode) await this.setMode(activeId, options.mode);
     if (typeof options?.allowAllPermissions === "boolean" && options.allowAllPermissions !== entry.session.allowAllPermissions) {
-      await this.setAllowAllPermissions(id, options.allowAllPermissions);
+      await this.setAllowAllPermissions(activeId, options.allowAllPermissions);
     }
     const modelId = options?.modelId ?? chat.draft?.model?.id ?? entry.session.modelId;
     const previous = chat.draft?.model ?? chat.activeTurn?.message.model ?? chat.turns.at(-1)?.message.model;
@@ -738,18 +1050,18 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     };
     const turnId = randomUUID();
     if (host.chats.get(entry.chatUri)?.activeTurn) {
-      this.queued.set(turnId, { sessionId: id, clientMessageId: options?.clientMessageId, announced: false });
+      this.queued.set(turnId, { sessionId: activeId, clientMessageId: options?.clientMessageId, announced: false });
       try { await host.dispatch(entry.chatUri, { type: "chat/pendingMessageSet", kind: "queued", id: turnId, message }); }
       catch (error) { this.queued.delete(turnId); throw error; }
       const queued = this.queued.get(turnId);
       if (queued) {
         queued.announced = true;
-        this.emit("message.queued", { sessionId: id, messageId: scopedId(id, turnId), queuePosition: host.chats.get(entry.chatUri)?.queuedMessages?.length ?? 1, clientMessageId: options?.clientMessageId });
+        this.emit("message.queued", { sessionId: activeId, messageId: scopedId(activeId, turnId), queuePosition: host.chats.get(entry.chatUri)?.queuedMessages?.length ?? 1, clientMessageId: options?.clientMessageId });
       }
     } else await host.dispatch(entry.chatUri, { type: "chat/turnStarted", turnId, startedAt: new Date().toISOString(), message });
     this.publishChat(entry);
-    return projectChat(id, host.chats.get(entry.chatUri)!, entry.session.directory, entry.session.engineType).find(message => message.id === scopedId(id, turnId, "assistant"))
-      ?? { id: scopedId(id, turnId), sessionId: id, role: "user" as const, parts: [], time: { created: Date.now() } };
+    return projectChat(activeId, host.chats.get(entry.chatUri)!, entry.session.directory, entry.session.engineType).find(message => message.id === scopedId(activeId, turnId, "assistant"))
+      ?? { id: scopedId(activeId, turnId), sessionId: activeId, role: "user" as const, parts: [], time: { created: Date.now() } };
   }
   async cancelMessage(id: string) {
     const { entry, host, chat } = await this.attach(id, true);
@@ -965,5 +1277,36 @@ export class AgentHostService extends EventEmitter<{ [K in keyof SessionBackendE
     if (!this.questions.has(id)) throw new Error("This question has already been answered.");
     await host.dispatch(entry.chatUri, { type: "chat/inputCompleted", requestId: pending.request.id, response: "decline" });
     this.publishChat(entry);
+  }
+  async getSessionWorkspace(id: string): Promise<UnifiedSessionWorkspaceState> {
+    const { entry, host, chat } = await this.attach(id);
+    await this.ensureChangesetSubscription(entry, host).catch(() => {});
+    const session = host.sessions.get(entry.sessionUri);
+    const changeset = entry.changesetUri ? host.changesets.get(entry.changesetUri) : undefined;
+    const workspace = projectSessionWorkspace(
+      id,
+      entry.session.directory,
+      session,
+      chat,
+      changeset,
+      entry.chatUri,
+    );
+    entry.workspaceDigest = JSON.stringify(workspace);
+    return workspace;
+  }
+  async previewSessionFile(id: string, fileId: string): Promise<UnifiedSessionFilePreview> {
+    const { entry, host } = await this.attach(id);
+    await this.ensureChangesetSubscription(entry, host).catch(() => {});
+    const session = host.sessions.get(entry.sessionUri);
+    const changeset = entry.changesetUri ? host.changesets.get(entry.changesetUri) : undefined;
+    return readAgentHostFilePreview(host, entry.session.directory, session, changeset, fileId);
+  }
+  async stopBackgroundTask(id: string, taskId: string): Promise<{ stopped: boolean }> {
+    const { entry, host } = await this.attach(id, true);
+    const res = await host.requestExtension<{ stopped?: boolean }>("vscode/stopBackgroundWork", {
+      chat: entry.chatUri,
+      id: taskId,
+    });
+    return { stopped: res?.stopped === true };
   }
 }

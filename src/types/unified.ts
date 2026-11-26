@@ -1034,6 +1034,11 @@ export const GatewayRequestType = {
 
   // Filesystem helpers (used by terminal link provider, etc.)
   FILE_EXISTS: "file.exists",
+
+  // Session Workspace (background tasks, changed files, artifacts, file preview)
+  SESSION_WORKSPACE_GET: "session.workspace.get",
+  SESSION_WORKSPACE_PREVIEW_FILE: "session.workspace.previewFile",
+  SESSION_BACKGROUND_STOP: "session.background.stop",
 } as const;
 
 // --- Notification type constants ---
@@ -1046,6 +1051,7 @@ export const GatewayNotificationType = {
   SESSION_UPDATED: "session.updated",
   SESSION_CREATED: "session.created",
   SESSION_REMOVED: "session.removed",
+  SESSION_WORKSPACE_UPDATED: "session.workspace.updated",
   PERMISSION_ASKED: "permission.asked",
   PERMISSION_REPLIED: "permission.replied",
   QUESTION_ASKED: "question.asked",
@@ -1092,6 +1098,80 @@ export interface SessionCreateRequest {
   projectId?: string | null;
   sourceId?: string;
   useWorktree?: boolean;
+}
+
+export interface UnifiedBackgroundTask {
+  id: string;
+  kind: "shell" | "subagent";
+  label: string;
+  command?: string;
+  startedAt?: string;
+  status: "running" | "completed";
+  detached?: boolean;
+  stoppable?: boolean;
+}
+
+export interface UnifiedSessionChangesSummary {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface UnifiedSessionFileItem {
+  id: string;
+  /** Workspace-relative or readable file path (forward slashes) */
+  path: string;
+  /** Short display name */
+  label: string;
+  kind: "created" | "modified" | "deleted" | "renamed" | "artifact";
+  additions?: number;
+  deletions?: number;
+  externalUrl?: string;
+  artifactType?: string;
+  previewable: boolean;
+}
+
+export interface UnifiedSessionWorkspaceState {
+  sessionId: string;
+  backgroundTasks: UnifiedBackgroundTask[];
+  changesSummary?: UnifiedSessionChangesSummary;
+  files: UnifiedSessionFileItem[];
+  loadingFiles?: boolean;
+  todos?: Array<{
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+  }>;
+}
+
+export interface UnifiedSessionFilePreview {
+  id: string;
+  path: string;
+  label: string;
+  kind: UnifiedSessionFileItem["kind"];
+  /** Unified diff patch string */
+  diff?: string;
+  /** File text content (after edit, or before edit when deleted) */
+  content?: string;
+  mimeType?: string;
+  /** Base64 image data when previewing an image */
+  imageBase64?: string;
+  binary?: boolean;
+  truncated?: boolean;
+  externalUrl?: string;
+}
+
+export interface SessionWorkspaceGetRequest {
+  sessionId: string;
+}
+
+export interface SessionWorkspacePreviewFileRequest {
+  sessionId: string;
+  fileId: string;
+}
+
+export interface SessionBackgroundStopRequest {
+  sessionId: string;
+  taskId: string;
 }
 
 export interface SessionArchiveRequest {

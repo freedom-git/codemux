@@ -515,8 +515,163 @@ describe("AgentHostService", () => {
     await adapter.createSession("copilot", "/tmp/my-target-repo", { useWorktree: false });
     expect(emptyEditorHost.requests.filter((r) => r.method === "createSession")).toHaveLength(0);
     expect(activeStandaloneHost.requests.filter((r) => r.method === "createSession")).toHaveLength(1);
+    // Shared disk session listed on both editor and standalone remains available (routed to standalone)
+    const existing = (await adapter.listSessions("copilot")).find((s) => s.title === "Native editor chat");
+    expect(existing?.connection?.available).toBe(true);
   });
-});
+
+  it("prunes idle duplicate standalone hosts without keepalive deadlock and routes to the active standalone instance", async () => {
+    const idleDuplicate = await createAgentHostFixture("copilotcli", "tcp");
+    const activePrimary = await createAgentHostFixture("copilotcli", "tcp");
+    cleanup.push(() => idleDuplicate.close(), () => activePrimary.close());
+
+    activePrimary.session.activeClients = [{ clientId: "vscode-tunnel-client", tools: [], customizations: [] }];
+
+    // Even when idleDuplicate sorts before activePrimary in discovery order:
+    const adapter = new AgentHostService({
+      enabled: true,
+      discover: async () => [idleDuplicate.endpoint, activePrimary.endpoint],
+      pollMs: 25,
+    });
+    cleanup.push(() => adapter.stop());
+    await adapter.start();
+
+    const sessions = await adapter.listSessions("copilot");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].connection?.available).toBe(true);
+    // Idle duplicate standalone WebSocket must be closed so --idle-timeout can reap it
+    await expect.poll(() => idleDuplicate.connectionCount).toBe(0);
+    expect(activePrimary.connectionCount).toBe(1);
+
+    const idlePingsAfterStart = idleDuplicate.requests.filter((r) => r.method === "ping").length;
+    const primaryPollsBefore = activePrimary.requests.filter((r) => r.method === "listSessions").length;
+    await expect.poll(() => activePrimary.requests.filter((r) => r.method === "listSessions").length).toBeGreaterThan(primaryPollsBefore + 2);
+    // Subsequent poll cycles must NOT reconnect or ping the suppressed idle duplicate
+    expect(idleDuplicate.connectionCount).toBe(0);
+    expect(idleDuplicate.requests.filter((r) => r.method === "ping").length).toBe(idlePingsAfterStart);
+
+    // Sending a message routes cleanly to activePrimary
+    await adapter.sendMessage(sessions[0].id, [{ type: "text", text: "from mobile" }]);
+    expect(activePrimary.chat.activeTurn?.message.text).toBe("from mobile");
+    expect(idleDuplicate.chat.activeTurn).toBeUndefined();
+  });
+
+  it("resurrects 0-message unused draft sessions that Agent Host GC-tombstoned while preserving title and emitting session.rebound", async () => {
+    const server = await createAgentHostFixture("copilotcli");
+    cleanup.push(() => server.close());
+
+    const gcSessionUri = "ahp-session:/gc-draft-session";
+    const gcChatUri = "ahp-chat:/gc-draft-chat";
+    const oldNativeId = nativeChatId(server.endpoint.source, gcChatUri);
+    server.tombstonedSessions.add(gcSessionUri);
+
+    const adapter = new AgentHostService({
+      enabled: true,
+      isWorktreeEnabled: () => false,
+      discover: async () => [server.endpoint],
+      pollMs: 100_000,
+      knownSessions: () => [
+        {
+          id: oldNativeId,
+          engineType: "copilot",
+          title: "昨日工作总结",
+          directory: "c:/Users/kevinzhang/.copilot/chats/0d8390de-3ae7-4b33-bb92-c93de490eb98",
+          allowAllPermissions: true,
+          engineMeta: {
+            ahpSource: server.endpoint.source,
+            ahpSession: gcSessionUri,
+            ahpChat: gcChatUri,
+            ahpProvider: "copilotcli",
+            localMessageCount: 0,
+          },
+          time: { created: 1000, updated: 1000 },
+        },
+      ],
+    });
+    cleanup.push(() => adapter.stop());
+
+    const reboundEvents: Array<{ previousSessionId: string; session: { id: string; title: string } }> = [];
+    adapter.on("session.rebound", (ev) => reboundEvents.push(ev));
+
+    await adapter.start();
+
+    expect(reboundEvents).toHaveLength(1);
+    expect(reboundEvents[0].previousSessionId).toBe(oldNativeId);
+    const resurrected = (await adapter.listSessions("copilot")).find((s) => s.title === "昨日工作总结");
+    expect(resurrected).toBeDefined();
+    expect(resurrected!.id).toBe(reboundEvents[0].session.id);
+    expect(resurrected!.connection?.available).toBe(true);
+    // Scratch .copilot/chats/* path must NOT be forwarded as a real workspace folder
+    const createCall = server.requests.find((r) => r.method === "createSession");
+    expect(createCall?.params?.workingDirectories).toBeUndefined();
+
+      // User can immediately send a message in the resurrected session, AND it stays available across polls!
+      const pollsBefore = server.requests.filter((r) => r.method === "listSessions").length;
+      expect((await adapter.getSession(resurrected!.id))?.connection?.available).toBe(true);
+
+      await adapter.sendMessage(resurrected!.id, [{ type: "text", text: "总结昨天的工作" }]);
+      const createdChatState = [...server.extraChats.values()][0];
+      expect(createdChatState?.activeTurn?.message.text).toBe("总结昨天的工作");
+      void pollsBefore;
+    });
+
+    it("keeps surviving 0-message creating drafts available across repeated background poll cycles", async () => {
+      const server = await createAgentHostFixture("copilotcli");
+      cleanup.push(() => server.close());
+
+      // Seed a surviving idle provisional session (`lifecycle: "creating"`, 0 turns) on the server
+      const draftSessionUri = "ahp-session:/surviving-draft";
+      const draftChatUri = "ahp-chat:/surviving-draft";
+      server.extraChats.set(draftChatUri, {
+        resource: draftChatUri,
+        title: "昨日工作总结",
+        status: 1,
+        modifiedAt: server.chat.modifiedAt,
+        turns: [],
+      } as ChatState);
+      server.extraSessions.set(draftSessionUri, {
+        provider: "copilotcli",
+        title: "昨日工作总结",
+        status: 1,
+        lifecycle: "creating",
+        activeClients: [],
+        chats: [{ resource: draftChatUri, title: "昨日工作总结", status: 1, modifiedAt: server.chat.modifiedAt }],
+        defaultChat: draftChatUri,
+      });
+
+      const draftId = nativeChatId(server.endpoint.source, draftChatUri);
+      const adapter = new AgentHostService({
+        enabled: true,
+        discover: async () => [server.endpoint],
+        pollMs: 20,
+        knownSessions: () => [
+          {
+            id: draftId,
+            engineType: "copilot",
+            title: "昨日工作总结",
+            directory: "",
+            engineMeta: {
+              ahpSource: server.endpoint.source,
+              ahpSession: draftSessionUri,
+              ahpChat: draftChatUri,
+              ahpProvider: "copilotcli",
+              localMessageCount: 0,
+            },
+            time: { created: 1000, updated: 1000 },
+          },
+        ],
+      });
+      cleanup.push(() => adapter.stop());
+      await adapter.start();
+
+      // Wait across 3+ background listSessions polls where the idle creating draft is omitted from listSessions
+      const initialPolls = server.requests.filter((r) => r.method === "listSessions").length;
+      await expect.poll(() => server.requests.filter((r) => r.method === "listSessions").length).toBeGreaterThan(initialPolls + 3);
+
+      const sessionAfterPolls = await adapter.getSession(draftId);
+      expect(sessionAfterPolls?.connection?.available).toBe(true);
+    });
+  });
 
 describe("native projection", () => {
   it("scopes chat and message identities by source while preserving ordered text, reasoning, and errors", () => {
@@ -638,3 +793,229 @@ describe("native projection", () => {
     });
   });
 });
+
+describe("AgentHostService session workspace, file preview, background stop, and sql todos", () => {
+  it("projects background tasks, changeset files, session artifacts, and SQLite todos, and emits updates", async () => {
+    const changesetUri = "ahp-session:/fixture/changeset/session";
+    const { server, adapter, id } = await setup((srv) => {
+      srv.session.workingDirectories = ["file:///workspace"];
+      srv.session.changesets = [
+        {
+          id: "session",
+          changeKind: "session",
+          uriTemplate: changesetUri,
+          label: "Session Changes",
+        } as any,
+      ];
+      srv.session._meta = {
+        "agentHost/sessionArtifacts": [
+          {
+            id: "plan-1",
+            label: "Architecture Plan",
+            type: "plan",
+            uri: "file:///workspace/docs/plan.md",
+            isArtifact: true,
+          },
+        ],
+      };
+      srv.changesets.set(changesetUri, {
+        status: "ready",
+        files: [
+          {
+            id: "src/App.tsx",
+            edit: {
+              before: {
+                uri: "file:///workspace/src/App.tsx",
+                content: { uri: "session-db:/fixture/before/App.tsx" },
+              },
+              after: {
+                uri: "file:///workspace/src/App.tsx",
+                content: { uri: "session-db:/fixture/after/App.tsx" },
+              },
+              diff: { added: 3, removed: 1, hunks: [] },
+            },
+          },
+          {
+            id: "assets/logo.png",
+            edit: {
+              after: {
+                uri: "file:///workspace/assets/logo.png",
+                content: { uri: "session-db:/fixture/after/logo.png" },
+              },
+              diff: { added: 0, removed: 0, hunks: [] },
+            },
+          },
+        ],
+      });
+      srv.resources.set("session-db:/fixture/before/App.tsx", {
+        data: "export const count = 1;\n",
+        encoding: "utf-8",
+        contentType: "text/plain",
+      });
+      srv.resources.set("session-db:/fixture/after/App.tsx", {
+        data: "export const count = 2;\nexport const ready = true;\nexport const label = 'ok';\n",
+        encoding: "utf-8",
+        contentType: "text/plain",
+      });
+      srv.resources.set("session-db:/fixture/after/logo.png", {
+        data: Buffer.from([137, 80, 78, 71]).toString("base64"),
+        encoding: "base64",
+        contentType: "image/png",
+      });
+      srv.resources.set("file:///workspace/docs/plan.md", {
+        data: "# Architecture Plan\n\nAll good.\n",
+        encoding: "utf-8",
+        contentType: "text/markdown",
+      });
+    });
+
+    const workspaceUpdates: unknown[] = [];
+    adapter.on("session.workspace.updated", (ev) => workspaceUpdates.push(ev));
+
+    // Attach first so live AHP notifications stream through the active subscription
+    await adapter.getSessionWorkspace(id);
+
+    // Start a turn with SQLite todos + backgroundWork update using real AHP actions
+    server.broadcast(server.chatUri, {
+      type: "chat/turnStarted",
+      turnId: "turn-todo",
+      message: { text: "Run server and update files", origin: { kind: "user" } },
+      startedAt: "2026-11-22T01:00:00.000Z",
+    });
+    server.broadcast(server.chatUri, {
+      type: "chat/toolCallStart",
+      turnId: "turn-todo",
+      toolCallId: "call-sql-1",
+      toolName: "sql",
+      displayName: "SQL",
+    });
+    server.broadcast(server.chatUri, {
+      type: "chat/toolCallReady",
+      turnId: "turn-todo",
+      toolCallId: "call-sql-1",
+      invocationMessage: "Updating todos",
+      toolInput: JSON.stringify({
+        query: "INSERT INTO todos (id, title, description, status) VALUES ('t1', 'Start dev server', 'Run vite', 'done'), ('t2', 'Verify file preview', 'Open modal', 'in_progress');",
+      }),
+    });
+    server.broadcast(server.chatUri, {
+      type: "chat/toolCallComplete",
+      turnId: "turn-todo",
+      toolCallId: "call-sql-1",
+      result: { success: true, content: [{ type: "text", text: "ok" }] },
+    });
+    server.broadcast(server.chatUri, {
+      type: "chat/backgroundWorkSet",
+      work: {
+        id: "shell-dev-1",
+        kind: "shell",
+        label: "Start dev server",
+        command: "npx electron-vite dev",
+        startedAt: "2026-11-22T01:00:05.000Z",
+        _meta: {
+          "vscode.stopBackgroundWork": true,
+          "vscode.copilot.shellAttachment": "detached",
+        },
+      },
+    } as any);
+
+    await vi.waitFor(async () => {
+      const ws = await adapter.getSessionWorkspace(id);
+      expect(ws.backgroundTasks.length).toBe(1);
+    });
+
+    const workspace = await adapter.getSessionWorkspace(id);
+    expect(workspace.sessionId).toBe(id);
+    expect(workspace.backgroundTasks).toEqual([
+      expect.objectContaining({
+        id: "shell-dev-1",
+        kind: "shell",
+        label: "Start dev server",
+        command: "npx electron-vite dev",
+        status: "running",
+        detached: true,
+        stoppable: true,
+      }),
+    ]);
+    expect(workspace.changesSummary).toEqual({
+      files: 2,
+      additions: 3,
+      deletions: 1,
+    });
+    expect(workspace.files).toEqual([
+      expect.objectContaining({
+        id: "src/App.tsx",
+        path: "src/App.tsx",
+        kind: "modified",
+        additions: 3,
+        deletions: 1,
+        previewable: true,
+      }),
+      expect.objectContaining({
+        id: "assets/logo.png",
+        path: "assets/logo.png",
+        kind: "created",
+        previewable: true,
+      }),
+      expect.objectContaining({
+        id: "artifact:plan-1",
+        path: "docs/plan.md",
+        label: "Architecture Plan",
+        kind: "artifact",
+        artifactType: "plan",
+        previewable: true,
+      }),
+    ]);
+    expect(workspace.todos).toEqual([
+      { content: "Start dev server", status: "completed" },
+      { content: "Verify file preview", status: "in_progress" },
+    ]);
+    expect(workspaceUpdates.length).toBeGreaterThan(0);
+
+    // Also verify projectChat projects SQLite todos into a normalized 'todo' ToolPart
+    const messages = await adapter.listMessages(id);
+    const assistantMsg = messages.find((m) => m.role === "assistant");
+    expect(assistantMsg?.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool",
+          normalizedTool: "todo",
+          state: expect.objectContaining({
+            input: {
+              todos: [
+                { content: "Start dev server", status: "completed" },
+                { content: "Verify file preview", status: "in_progress" },
+              ],
+            },
+          }),
+        }),
+      ]),
+    );
+
+    // Preview modified TypeScript file (diff + full after content)
+    const appPreview = await adapter.previewSessionFile(id, "src/App.tsx");
+    expect(appPreview.kind).toBe("modified");
+    expect(appPreview.diff).toContain("-export const count = 1;");
+    expect(appPreview.diff).toContain("+export const count = 2;");
+    expect(appPreview.content).toContain("export const ready = true;");
+
+    // Preview image file
+    const imgPreview = await adapter.previewSessionFile(id, "assets/logo.png");
+    expect(imgPreview.mimeType).toBe("image/png");
+    expect(imgPreview.imageBase64).toBe(Buffer.from([137, 80, 78, 71]).toString("base64"));
+
+    // Preview markdown session artifact
+    const planPreview = await adapter.previewSessionFile(id, "artifact:plan-1");
+    expect(planPreview.kind).toBe("artifact");
+    expect(planPreview.content).toContain("# Architecture Plan");
+
+    // Stop background task via vscode/stopBackgroundWork
+    const stopped = await adapter.stopBackgroundTask(id, "shell-dev-1");
+    expect(stopped).toEqual({ stopped: true });
+    expect(server.requests).toContainEqual({
+      method: "vscode/stopBackgroundWork",
+      params: { chat: server.chatUri, id: "shell-dev-1" },
+    });
+  });
+});
+

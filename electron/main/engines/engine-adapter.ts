@@ -30,6 +30,8 @@ import type {
   EngineCatalogSnapshot,
   CatalogProjectInput,
   CatalogProjectPatch,
+  UnifiedSessionWorkspaceState,
+  UnifiedSessionFilePreview,
 } from "../../../src/types/unified";
 
 /**
@@ -399,6 +401,20 @@ export abstract class EngineAdapter extends EventEmitter {
 
   /** List projects (directories with engine bindings) */
   abstract listProjects(): Promise<UnifiedProject[]>;
+
+  // --- Session Workspace (background tasks, changed files, file preview) ---
+
+  async getSessionWorkspace(_sessionId: string): Promise<UnifiedSessionWorkspaceState | null> {
+    return null;
+  }
+
+  async previewSessionFile(_sessionId: string, _fileId: string): Promise<UnifiedSessionFilePreview | null> {
+    return null;
+  }
+
+  async stopBackgroundTask(_sessionId: string, _taskId: string): Promise<{ stopped: boolean }> {
+    return { stopped: false };
+  }
 
   // --- Slash Commands / Skills ---
 

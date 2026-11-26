@@ -20,6 +20,7 @@ import { EngineAdapter, MessageBuffer } from "../engine-adapter";
 import { CODEMUX_IDENTITY_PROMPT } from "../identity-prompt";
 import { copilotLog } from "../../services/logger";
 import { inferToolKind, normalizeToolName } from "../../../../src/types/tool-mapping";
+import { applySqlTodosMutation, isSqlTodosMutation, serializeTodoEntries } from "../../../../shared/sql-todos";
 import type {
   EngineType,
   EngineStatus,
@@ -1548,7 +1549,7 @@ export class CopilotSdkAdapter extends EngineAdapter {
 
     const normalizedTool = normalizeToolName("copilot", data.toolName);
     const sqlQuery = data.arguments?.query || "";
-    if (normalizedTool === "sql" && /\btodos\b/i.test(sqlQuery)) {
+    if (normalizedTool === "sql" && isSqlTodosMutation(sqlQuery)) {
       this.applySqlTodoChanges(sessionId, sqlQuery);
       this.emitTodoPart(sessionId, buffer, data.toolCallId, "running");
       return;
@@ -2129,26 +2130,13 @@ export class CopilotSdkAdapter extends EngineAdapter {
   private applySqlTodoChanges(sessionId: string, sql: string): void {
     let todos = this.sessionTodos.get(sessionId);
     if (!todos) { todos = new Map(); this.sessionTodos.set(sessionId, todos); }
-    const insertPattern = /INSERT\s+INTO\s+todos\b[^)]*\)\s*VALUES\s*([\s\S]+?)(?:;|$)/gi;
-    let m: any;
-    while ((m = insertPattern.exec(sql)) !== null) {
-      const rowPattern = /\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g;
-      let rm: any;
-      while ((rm = rowPattern.exec(m[1])) !== null) todos.set(rm[1], { id: rm[1], title: rm[2], status: rm[3] });
-    }
-    const updatePattern = /UPDATE\s+todos\s+SET\s+status\s*=\s*'([^']+)'(?:\s+WHERE\s+id\s+(?:IN\s*\(([^)]+)\)|=\s*'([^']+)'))?/gi;
-    while ((m = updatePattern.exec(sql)) !== null) {
-      const status = m[1], inList = m[2], singleId = m[3];
-      if (inList) { const ids = [...inList.matchAll(/'([^']+)'/g)].map((im: any) => im[1]); for (const id of ids) { const e = todos.get(id); if (e) e.status = status; } }
-      else if (singleId) { const e = todos.get(singleId); if (e) e.status = status; }
-      else { for (const t of todos.values()) t.status = status; }
-    }
+    applySqlTodosMutation(todos, sql);
   }
 
   private getTodosArray(sessionId: string): Array<{ content: string; status: any }> {
     const todos = this.sessionTodos.get(sessionId);
     if (!todos || todos.size === 0) return [];
-    return [...todos.values()].map((t) => ({ content: t.title, status: normalizeTodoStatus(t.status) }));
+    return serializeTodoEntries(todos);
   }
 
   private emitTodoPart(sessionId: string, buffer: MessageBuffer, toolCallId: string, status: "running" | "completed"): void {
